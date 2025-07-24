@@ -865,7 +865,7 @@ EB_interp_CC_to_Centroid (MultiFab& cent, const MultiFab& cc, int scomp, int dco
     const auto& loc = factory.getCentroid();
 
     MFItInfo mfi_info;
-    if (Gpu::notInLaunchRegion()) { mfi_info.SetDynamic(true); }
+    if (Gpu::notInLaunchRegion()) { mfi_info.EnableTiling().SetDynamic(true); }
 #ifdef AMREX_USE_OMP
 #pragma omp parallel if (Gpu::notInLaunchRegion())
 #endif
@@ -947,7 +947,7 @@ EB_interp_CC_to_FaceCentroid (const MultiFab& cc,
     }
 
     MFItInfo mfi_info;
-    if (Gpu::notInLaunchRegion()) { mfi_info.SetDynamic(true); }
+    if (Gpu::notInLaunchRegion()) { mfi_info.EnableTiling().SetDynamic(true); }
 #ifdef AMREX_USE_OMP
 #pragma omp parallel if (Gpu::notInLaunchRegion())
 #endif
@@ -1085,7 +1085,7 @@ EB_interp_CellCentroid_to_FaceCentroid (const MultiFab& phi_centroid,
     }
 
     MFItInfo mfi_info;
-    if (Gpu::notInLaunchRegion()) { mfi_info.SetDynamic(true); }
+    if (Gpu::notInLaunchRegion()) { mfi_info.EnableTiling().SetDynamic(true); }
 #ifdef AMREX_USE_OMP
 #pragma omp parallel if (Gpu::notInLaunchRegion())
 #endif
