@@ -68,6 +68,27 @@ mlndlap_unimpose_neumann_bc (Box const& bx, Array4<Real> const& rhs, Box const& 
     mlndlap_scale_neumann_bc(0.5, bx, rhs, nddom, lobc, hibc);
 }
 
+// If the node is on exactly one non-periodic face of the domain and that face is a Neumann
+// boundary (a wall), return the direction normal to it and set side to +1 for a low face and -1
+// for a high face.  Otherwise return -1.
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+int mlndlap_single_wall_dir (IntVect const& node, Box const& nddom,
+                             GpuArray<LinOpBCType,AMREX_SPACEDIM> const& lobc,
+                             GpuArray<LinOpBCType,AMREX_SPACEDIM> const& hibc,
+                             int& side) noexcept
+{
+    int nbnd = 0;
+    int dir = -1;
+    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+        bool const lo = node[idim] == nddom.smallEnd(idim) && lobc[idim] != LinOpBCType::Periodic;
+        bool const hi = node[idim] == nddom.bigEnd(idim)   && hibc[idim] != LinOpBCType::Periodic;
+        if (lo || hi) { ++nbnd; }
+        if (lo && lobc[idim] == LinOpBCType::Neumann) { dir = idim; side =  1; }
+        if (hi && hibc[idim] == LinOpBCType::Neumann) { dir = idim; side = -1; }
+    }
+    return (nbnd == 1) ? dir : -1;
+}
+
 }
 
 #if (AMREX_SPACEDIM == 1)
