@@ -106,6 +106,12 @@ public :
      */
     void setRZCorrection (bool rz) noexcept { m_is_rz = rz; }
 
+    //! Second-order nodal divergence at Neumann (wall) domain faces: the tangential
+    //! derivatives and the cell-centred source are taken a quarter cell from the wall,
+    //! the centre of the wall node's half-cell control volume, instead of at the first
+    //! cell centres.  Nodes on two or more walls keep the original stencil.
+    void setWallDivuCorrection (bool on) noexcept { m_wall_divu_corr = on; }
+
     /**
      * \brief Threshold for normalization (prevents dividing by tiny averages).
      *
@@ -367,6 +373,7 @@ protected:
 private:
 
     int m_is_rz = 0;
+    bool m_wall_divu_corr = false;
 
     Real m_const_sigma = Real(0.0);
     Vector<Vector<Array<std::unique_ptr<MultiFab>,AMREX_SPACEDIM> > > m_sigma;
