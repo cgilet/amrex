@@ -1171,6 +1171,7 @@ MLNodeLaplacian::compRHS (const Vector<MultiFab*>& rhs, const Vector<MultiFab*>&
 
         const auto dxinvarr = geom.InvCellSizeArray();
         const Box& nddom = amrex::surroundingNodes(geom.Domain());
+        const int corner_mode = m_wall_divu_corr;
 
         const iMultiFab& dmsk = *m_dirichlet_mask[ilev][0];
 
@@ -1259,7 +1260,7 @@ MLNodeLaplacian::compRHS (const Vector<MultiFab*>& rhs, const Vector<MultiFab*>&
 
             mlndlap_impose_neumann_bc(bx, rhsarr, nddom, lobc, hibc);
 
-            if (m_wall_divu_corr && !m_is_rz
+            if (m_wall_divu_corr != 0 && !m_is_rz
 #ifdef AMREX_USE_EB
                 && typ == FabType::regular
 #endif
@@ -1268,7 +1269,7 @@ MLNodeLaplacian::compRHS (const Vector<MultiFab*>& rhs, const Vector<MultiFab*>&
                 AMREX_HOST_DEVICE_PARALLEL_FOR_3D (bx, i, j, k,
                 {
                     mlndlap_divu_wall_corr(i,j,k,rhsarr,velarr,dmskarr,dxinvarr,
-                                           nddom,lobc,hibc);
+                                           nddom,lobc,hibc,corner_mode);
                 });
             }
 
@@ -1304,7 +1305,7 @@ MLNodeLaplacian::compRHS (const Vector<MultiFab*>& rhs, const Vector<MultiFab*>&
 
                 mlndlap_impose_neumann_bc(bx, rhs_cc_a, nddom, lobc, hibc);
 
-                if (m_wall_divu_corr && !m_is_rz
+                if (m_wall_divu_corr != 0 && !m_is_rz
 #ifdef AMREX_USE_EB
                     && typ == FabType::regular
 #endif
@@ -1313,7 +1314,7 @@ MLNodeLaplacian::compRHS (const Vector<MultiFab*>& rhs, const Vector<MultiFab*>&
                     AMREX_HOST_DEVICE_PARALLEL_FOR_3D (bx, i, j, k,
                     {
                         mlndlap_rhcc_wall_corr(i,j,k,rhs_cc_a,rhccarr,dmskarr,
-                                               nddom,lobc,hibc);
+                                               nddom,lobc,hibc,corner_mode);
                     });
                 }
             }
