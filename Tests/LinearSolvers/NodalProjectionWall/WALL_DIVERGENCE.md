@@ -86,10 +86,10 @@ with `maxorder = 3` (README tables). In incflo's Burggraf cavity with the tensor
 `mg_maxorder = 3`, c on the walls is 0.45 to 0.50 without the correction (n = 32, 64), and with
 it 0.13, 0.07 on the x walls and below 0.06 on the bottom and the lid.
 
-Implementation (`AMReX_MLNodeLap_2D_K.H`, `_3D_K.H`): the correction is written as it is
-after the Neumann scaling and divided by that scaling's factor 2^nwall, inside the
-`mlndlap_divu` and `mlndlap_rhcc` loops. Scaling by a power of 2 is exact, so this is the same
-as adding it after the scaling.
+Implementation (`AMReX_MLNodeLap_2D_K.H`, `_3D_K.H`, `AMReX_MLNodeLaplacian_misc.cpp`): the
+correction is added in a separate pass over the wall and inflow nodes only
+(`mlndlap_for_each_wall_node`), after the Neumann scaling of `mlndlap_impose_neumann_bc`, so
+it does not depend on the scaling factor.
 
 ## 5. Corners and edges
 

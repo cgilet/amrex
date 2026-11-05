@@ -1187,9 +1187,9 @@ MLNodeLaplacian::compRHS (const Vector<MultiFab*>& rhs, const Vector<MultiFab*>&
 #endif
 
         // Second-order divergence at wall and inflow nodes (setWallDivuCorrection; see
-        // mlndlap_divu_wall_correction and mlndlap_rhcc_wall_correction).  Not for RZ.  With EB,
-        // it is only applied in regular boxes: cut cells use mlndlap_divu_eb and
-        // mlndlap_rhcc_eb, which have no such correction.
+        // mlndlap_divu_wall_correction and mlndlap_rhcc_wall_correction), added after the
+        // Neumann scaling.  Not for RZ.  With EB, it is only applied in regular boxes: cut cells
+        // use mlndlap_divu_eb and mlndlap_rhcc_eb, which have no such correction.
         int wall_mode = m_wall_divu_corr;
 #if (AMREX_SPACEDIM == 2)
         if (is_rz) { wall_mode = 0; }
@@ -1256,25 +1256,32 @@ MLNodeLaplacian::compRHS (const Vector<MultiFab*>& rhs, const Vector<MultiFab*>&
                 {
                     mlndlap_divu(i,j,k,rhsarr,velarr,dmskarr,dxinvarr,
                                  nddom,lobc,hibc,is_rz);
-                    if (wall_mode > 0) {
-                        mlndlap_divu_wall_correction(i,j,k,rhsarr,velarr,dmskarr,dxinvarr,
-                                                     nddom,lobc,hibc,wall_mode);
-                    }
                 });
 #else
                 AMREX_HOST_DEVICE_PARALLEL_FOR_3D (bx, i, j, k,
                 {
                     mlndlap_divu(i,j,k,rhsarr,velarr,dmskarr,dxinvarr,
                                  nddom,lobc,hibc);
-                    if (wall_mode > 0) {
-                        mlndlap_divu_wall_correction(i,j,k,rhsarr,velarr,dmskarr,dxinvarr,
-                                                     nddom,lobc,hibc,wall_mode);
-                    }
                 });
 #endif
             }
 
             mlndlap_impose_neumann_bc(bx, rhsarr, nddom, lobc, hibc);
+
+            // The wall correction, on the wall nodes only, after the Neumann scaling.  Not in
+            // boxes with cut or covered EB cells.
+            bool wall_box = (wall_mode > 0);
+#ifdef AMREX_USE_EB
+            wall_box = wall_box && (typ == FabType::regular);
+#endif
+            if (wall_box) {
+                mlndlap_for_each_wall_node(bx, nddom, lobc, hibc,
+                [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+                {
+                    mlndlap_divu_wall_correction(i,j,k,rhsarr,velarr,dmskarr,dxinvarr,
+                                                 nddom,lobc,hibc,wall_mode);
+                });
+            }
 
             if (rhcc[ilev])
             {
@@ -1303,15 +1310,19 @@ MLNodeLaplacian::compRHS (const Vector<MultiFab*>& rhs, const Vector<MultiFab*>&
                     AMREX_HOST_DEVICE_PARALLEL_FOR_3D(bx, i, j, k,
                     {
                         rhs_cc_a(i,j,k) = mlndlap_rhcc(i, j, k, rhccarr, dmskarr);
-                        if (wall_mode > 0) {
-                            rhs_cc_a(i,j,k) += mlndlap_rhcc_wall_correction(i, j, k, rhccarr, dmskarr,
-                                                                            nddom, lobc, hibc,
-                                                                            wall_mode);
-                        }
                     });
                 }
 
                 mlndlap_impose_neumann_bc(bx, rhs_cc_a, nddom, lobc, hibc);
+
+                if (wall_box) {
+                    mlndlap_for_each_wall_node(bx, nddom, lobc, hibc,
+                    [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+                    {
+                        mlndlap_rhcc_wall_correction(i,j,k,rhs_cc_a,rhccarr,dmskarr,
+                                                     nddom,lobc,hibc,wall_mode);
+                    });
+                }
             }
         }
     }

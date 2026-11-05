@@ -25,13 +25,21 @@ namespace nodelap_detail {
 }
 /// \endcond
 
+// A domain face that mlndlap_divu and mlndlap_scale_neumann_bc treat as a wall: Neumann or inflow.
+// The control volumes of its nodes are cut in half.
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+bool mlndlap_wall_bc (LinOpBCType t) noexcept
+{
+    return t == LinOpBCType::Neumann || t == LinOpBCType::inflow;
+}
+
 inline void
 mlndlap_scale_neumann_bc (Real s, Box const& bx, Array4<Real> const& rhs, Box const& nddom,
                           GpuArray<LinOpBCType,AMREX_SPACEDIM> const& lobc,
                           GpuArray<LinOpBCType,AMREX_SPACEDIM> const& hibc) noexcept
 {
     for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-        if (lobc[idim] == LinOpBCType::Neumann || lobc[idim] == LinOpBCType::inflow) {
+        if (mlndlap_wall_bc(lobc[idim])) {
             Box const& blo = amrex::bdryLo(bx, idim);
             if (blo.smallEnd(idim) == nddom.smallEnd(idim)) {
                 AMREX_HOST_DEVICE_PARALLEL_FOR_3D (blo, i, j, k,
@@ -40,7 +48,7 @@ mlndlap_scale_neumann_bc (Real s, Box const& bx, Array4<Real> const& rhs, Box co
                 });
             }
         }
-        if (hibc[idim] == LinOpBCType::Neumann || hibc[idim] == LinOpBCType::inflow) {
+        if (mlndlap_wall_bc(hibc[idim])) {
             Box const& bhi = amrex::bdryHi(bx, idim);
             if (bhi.bigEnd(idim) == nddom.bigEnd(idim)) {
                 AMREX_HOST_DEVICE_PARALLEL_FOR_3D (bhi, i, j, k,
@@ -85,21 +93,50 @@ int mlndlap_wall_correction_faces (IntVect const& node, Box const& nddom,
     for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
         wall[idim] = 0;
         if (node[idim] == nddom.smallEnd(idim) && lobc[idim] != LinOpBCType::Periodic) {
-            if (lobc[idim] != LinOpBCType::Neumann && lobc[idim] != LinOpBCType::inflow) {
-                return 0;
-            }
+            if (!mlndlap_wall_bc(lobc[idim])) { return 0; }
             wall[idim] = 1;
             ++nwall;
         }
         if (node[idim] == nddom.bigEnd(idim) && hibc[idim] != LinOpBCType::Periodic) {
-            if (hibc[idim] != LinOpBCType::Neumann && hibc[idim] != LinOpBCType::inflow) {
-                return 0;
-            }
+            if (!mlndlap_wall_bc(hibc[idim])) { return 0; }
             wall[idim] = -1;
             ++nwall;
         }
     }
     return (nwall == 1 || (nwall > 1 && mode >= 2)) ? nwall : 0;
+}
+
+// Calls f(i,j,k) once at each node of the nodal box bx on a domain face that is a wall
+// (mlndlap_wall_bc), i.e. on the faces that mlndlap_scale_neumann_bc scales.  The corrections of
+// setWallDivuCorrection are added there, after the scaling, so they do not depend on its factor.
+// Only those faces are visited.  A node on several (a domain edge or corner) is visited from its
+// lowest wall direction only.
+template <typename F>
+void mlndlap_for_each_wall_node (Box const& bx, Box const& nddom,
+                                 GpuArray<LinOpBCType,AMREX_SPACEDIM> const& lobc,
+                                 GpuArray<LinOpBCType,AMREX_SPACEDIM> const& hibc, F const& f)
+{
+    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+        for (int side = 0; side < 2; ++side) {
+            bool const lo = (side == 0);
+            if (!mlndlap_wall_bc(lo ? lobc[idim] : hibc[idim])) { continue; }
+            Box const b = lo ? amrex::bdryLo(bx, idim) : amrex::bdryHi(bx, idim);
+            if (lo ? (b.smallEnd(idim) != nddom.smallEnd(idim))
+                   : (b.bigEnd(idim) != nddom.bigEnd(idim))) { continue; }
+            amrex::ParallelFor(b, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+            {
+                IntVect const iv(AMREX_D_DECL(i,j,k));
+                bool first = true;
+                for (int d = 0; d < idim; ++d) {
+                    if ((iv[d] == nddom.smallEnd(d) && mlndlap_wall_bc(lobc[d])) ||
+                        (iv[d] == nddom.bigEnd(d) && mlndlap_wall_bc(hibc[d]))) {
+                        first = false;
+                    }
+                }
+                if (first) { f(i,j,k); }
+            });
+        }
+    }
 }
 
 }
