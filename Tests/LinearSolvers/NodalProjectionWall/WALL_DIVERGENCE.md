@@ -192,18 +192,25 @@ The reproducer measures both:
   minus the boundary flux is 1e-16 without the correction and with mode 2, and 1e-2 to 5e-4
   (n = 32 to 256) with mode 1.
 - A uniform inflow against no-slip walls, projected: the flux of the projected velocity
-  through cross-sections of the channel minus the inflow flux.
+  through cross-sections of the channel minus the inflow flux. Each stencil conserves its own
+  flux, so it has to be measured with the same face fluxes the stencil uses: h sum_j u(i,j)
+  for the original stencil, and with the corrected half-cell faces next to the walls,
+  h sum_j u(i,j) + (h/2)(u_1 - u_2)/4 at each wall, for the corrected one (these terms are those
+  of the velocity before the projection, since the correction is applied to the right-hand
+  side). At x = 1/2:
 
-  | n | no correction | mode 1 | mode 2 |
-  |---|---|---|---|
-  | 32 | -2.8e-12 | -2.1e-3 | 2.0e-4 |
-  | 64 | -2.7e-12 | -1.1e-3 | 5.3e-5 |
-  | 128 | -2.7e-12 | -5.6e-4 | 1.3e-5 |
-  | 256 | -2.3e-12 | -2.8e-4 | 3.4e-6 |
+  | n | no correction | mode 1, own flux | mode 2, own flux | mode 2, h sum_j u |
+  |---|---|---|---|---|
+  | 32 | -2.8e-12 | -2.3e-3 | -2.8e-12 | 2.0e-4 |
+  | 64 | -2.7e-12 | -1.1e-3 | -2.7e-12 | 5.3e-5 |
+  | 128 | -2.7e-12 | -5.8e-4 | -2.7e-12 | 1.3e-5 |
+  | 256 | -2.3e-12 | -2.9e-4 | -2.3e-12 | 3.4e-6 |
 
-  (at x = 1/2). Mode 1 loses mass at first order, by the same amount at every cross-section;
-  mode 2 is conservative, and the O(h^2) left is the difference between the corrected fluxes
-  next to the walls and the plain sum of cell velocities measured.
+  Mode 2 carries its own flux exactly, like the original stencil. Measured with the original
+  stencil's flux instead, it is off by the O(h^2) wall terms, which vary with x: two
+  second-order approximations of the same flux differ by that much, but no mass is lost.
+  Mode 1 is off at first order, by the same amount at every x in either measure: mass lost at
+  the corners.
 
 Before inflow faces were counted as walls, mode 2 had the same first-order loss at wall/inflow
 corners, since the corner node was not corrected and its neighbour on the wall was.

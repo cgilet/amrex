@@ -863,9 +863,16 @@ Real conservation_check (int n, int max_grid_size, int closed)
 //   u = (2/pi)^2 atan2(y, x) atan2(1-y, x),  v = 0,
 // which is 1 on the inflow face, 0 on the walls, and changes by O(1) from cell to cell next to
 // the corners at every resolution.  The projected velocity carries the inflow flux, 1, through
-// every cross-section of the channel.  Returns the flux h sum_j u(i,j) minus 1 at
-// i = n/4, n/2, 3n/4: a node that is not conservative adds its error to it downstream.
-std::array<Real,3> uniform_inflow_run (int n, int max_grid_size, Real rtol, int verbose)
+// every cross-section of the channel.  Returns, at i = n/4, n/2, 3n/4, minus 1:
+//   [0..2] the flux h sum_j u(i,j) of the projected velocity, the one the uncorrected stencil
+//          conserves;
+//   [3..5] the flux the corrected stencil conserves.  The correction takes the flux through the
+//          half-cell faces next to a wall as (5/4) u_1 - (1/4) u_2 instead of u_1 (the first two
+//          cells from the wall), which adds (h/2) (u_1 - u_2)/4 at each wall.  It is applied to
+//          the right-hand side, i.e. to the velocity before the projection, so these terms are
+//          those of that velocity.  Without the correction this is the same as [0..2].
+// A node that is not conservative adds its error to both, the same at every x downstream.
+std::array<Real,6> uniform_inflow_run (int n, int max_grid_size, Real rtol, int verbose)
 {
     Real const h = Real(1)/Real(n);
 #if (AMREX_SPACEDIM == 3)
@@ -925,6 +932,8 @@ std::array<Real,3> uniform_inflow_run (int n, int max_grid_size, Real rtol, int 
     MultiFab rhs(nba, dm, 1, 0);
     MultiFab phi(nba, dm, 1, 1);
     phi.setVal(0.0);
+    MultiFab vel_in(ba, dm, 1, 0);
+    MultiFab::Copy(vel_in, vel, 0, 0, 1, 0);
     linop.compRHS({&rhs}, {&vel}, {}, {});
     MLMG mlmg(linop);
     mlmg.setVerbose(verbose);
@@ -933,18 +942,25 @@ std::array<Real,3> uniform_inflow_run (int n, int max_grid_size, Real rtol, int 
     mlmg.getFluxes({&flux});
     MultiFab::Add(vel, flux, 0, 0, AMREX_SPACEDIM, 0);
 
+    // u after the projection (component 0) and before it (component 1), on one box
     DistributionMapping const dm1(Vector<int>{ParallelDescriptor::IOProcessorNumber()});
-    MultiFab all(BoxArray(domain), dm1, 1, 0, MFInfo().SetArena(The_Pinned_Arena()));
+    MultiFab all(BoxArray(domain), dm1, 2, 0, MFInfo().SetArena(The_Pinned_Arena()));
     all.ParallelCopy(vel, 0, 0, 1);
+    all.ParallelCopy(vel_in, 0, 1, 1);
     Gpu::streamSynchronize();
-    std::array<Real,3> q{};
+    std::array<Real,6> q{};
     for (MFIter mfi(all); mfi.isValid(); ++mfi) {
         auto const& a = all.const_array(mfi);
         int m = 0;
         for (int i : {n/4, n/2, 3*n/4}) {
             Real s = 0;
             for (int j = 0; j < n; ++j) { s += a(i,j,0); }
-            q[m++] = s*h - Real(1);
+            q[m] = s*h - Real(1);
+            Real const walls = (wall_corr > 0)
+                ? Real(0.125)*h*((a(i,0,0,1) - a(i,1,0,1)) + (a(i,n-1,0,1) - a(i,n-2,0,1)))
+                : Real(0);
+            q[m+3] = q[m] + walls;
+            ++m;
         }
     }
     return q;
@@ -1070,12 +1086,16 @@ int main (int argc, char* argv[])
             }
             amrex::Print() << "\nUniform inflow (u = 1 in the inflow ghost cells up to the no-slip walls):\n"
                            << "flux of the projected velocity through x = 1/4, 1/2, 3/4, minus the inflow\n"
-                           << "flux 1\n"
-                           << "     n        x = 1/4        x = 1/2        x = 3/4\n";
+                           << "flux 1: h sum_j u (the flux the uncorrected stencil conserves), and the\n"
+                           << "flux the corrected stencil conserves (the same without the correction)\n"
+                           << "                   h sum_j u                         conserved by the stencil\n"
+                           << "     n     x = 1/4    x = 1/2    x = 3/4         x = 1/4    x = 1/2    x = 3/4\n";
             for (int n : n_cell) {
                 auto const q = uniform_inflow_run(n, max_grid_size, rtol, verbose);
-                std::snprintf(line, sizeof(line), "  %4d   %12.3e   %12.3e   %12.3e\n", n,
-                              double(q[0]), double(q[1]), double(q[2]));
+                std::snprintf(line, sizeof(line),
+                              "  %4d  %10.3e %10.3e %10.3e      %10.3e %10.3e %10.3e\n", n,
+                              double(q[0]), double(q[1]), double(q[2]),
+                              double(q[3]), double(q[4]), double(q[5]));
                 amrex::Print() << line;
             }
             amrex::Print() << '\n';

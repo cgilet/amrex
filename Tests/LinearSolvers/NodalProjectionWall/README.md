@@ -340,35 +340,42 @@ a uniform `mi` inflow. The data do not match at the wall/inflow corners, and the
 singular there. The velocity projected is u = (2/pi)^2 atan2(y, x) atan2(1-y, x), v = 0,
 which is 1 on the inflow face, 0 on the walls, and changes by O(1) from cell to cell next to
 the corners at every resolution. The projected velocity must carry the inflow flux, 1,
-through every cross-section; the test prints the flux h sum_j u(i,j) minus 1 at x = 1/4, 1/2
-and 3/4:
+through every cross-section. The test prints, at x = 1/4, 1/2 and 3/4, minus 1:
+
+- the flux h sum_j u(i,j), which is the flux through a column of control-volume faces as the
+  uncorrected stencil defines it, and
+- the flux as the corrected stencil defines it. The correction takes the flux through the
+  half-cell faces next to a wall as (5/4) u_1 - (1/4) u_2 instead of u_1 (u_1, u_2: the first
+  two cells from the wall), which adds (h/2)(u_1 - u_2)/4 at each wall. It is applied to the
+  right-hand side, so these terms are those of the velocity before the projection.
+
+A conservative stencil makes its own flux exact, to the solver tolerance:
 
 ```
+                   h sum_j u                         conserved by the stencil
+     n     x = 1/4    x = 1/2    x = 3/4         x = 1/4    x = 1/2    x = 3/4
 wall_corr=0
-     n        x = 1/4        x = 1/2        x = 3/4
-    32     -4.577e-12     -2.822e-12     -1.770e-12
-    64     -4.804e-12     -2.713e-12     -1.719e-12
-   128     -4.771e-12     -2.667e-12     -1.567e-12
-   256     -4.552e-12     -2.300e-12     -1.092e-12
-
+    32  -4.577e-12 -2.822e-12 -1.770e-12      -4.577e-12 -2.822e-12 -1.770e-12
+    64  -4.804e-12 -2.713e-12 -1.719e-12      -4.804e-12 -2.713e-12 -1.719e-12
+   128  -4.771e-12 -2.667e-12 -1.567e-12      -4.771e-12 -2.667e-12 -1.567e-12
+   256  -4.552e-12 -2.300e-12 -1.092e-12      -4.552e-12 -2.300e-12 -1.092e-12
 wall_corr=1
-    32     -1.805e-03     -2.076e-03     -2.166e-03
-    64     -1.022e-03     -1.094e-03     -1.117e-03
-   128     -5.430e-04     -5.616e-04     -5.675e-04
-   256     -2.798e-04     -2.845e-04     -2.860e-04
-
+    32  -1.805e-03 -2.076e-03 -2.166e-03      -2.281e-03 -2.281e-03 -2.281e-03
+    64  -1.022e-03 -1.094e-03 -1.117e-03      -1.147e-03 -1.147e-03 -1.147e-03
+   128  -5.430e-04 -5.616e-04 -5.675e-04      -5.750e-04 -5.750e-04 -5.750e-04
+   256  -2.798e-04 -2.845e-04 -2.860e-04      -2.879e-04 -2.879e-04 -2.879e-04
 wall_corr=2
-    32      4.752e-04      2.042e-04      1.143e-04
-    64      1.253e-04      5.295e-05      2.959e-05
-   128      3.208e-05      1.347e-05      7.523e-06
-   256      8.111e-06      3.395e-06      1.896e-06
+    32   4.752e-04  2.042e-04  1.143e-04      -4.575e-12 -2.814e-12 -1.763e-12
+    64   1.253e-04  5.295e-05  2.959e-05      -4.794e-12 -2.698e-12 -1.708e-12
+   128   3.208e-05  1.347e-05  7.523e-06      -4.762e-12 -2.671e-12 -1.578e-12
+   256   8.111e-06  3.395e-06  1.896e-06      -4.553e-12 -2.297e-12 -1.104e-12
 ```
 
-- The original stencil is conservative, and the flux is right to the solver tolerance.
-- With `wall_corr=1` the wall/inflow corner nodes are not corrected and their neighbours are,
-  and the flux through their shared half-cell faces differs. The difference is an O(h) mass
-  source at each corner, and the projected velocity carries the wrong flux, by the same amount
-  at every x, which converges at first order.
-- With `wall_corr=2` the divergence is conservative again. What remains is the O(h^2)
-  difference between the flux the corrected nodes use on the half cells next to the walls and
-  the sum of the cell velocities measured here.
+- The original stencil and `wall_corr=2` are conservative: each carries its own flux exactly.
+  With `wall_corr=2`, h sum_j u differs from it by the O(h^2) wall terms, which vary with x
+  as the velocity gradient at the walls does. That is a difference between two second-order
+  approximations of the flux through the cross-section, not lost mass.
+- With `wall_corr=1` the wall/inflow corner nodes are not corrected and their neighbours on
+  the walls are, and the two use different fluxes through the half-cell faces they share.
+  The difference is a mass source at each corner. The flux is off by the same amount at every
+  x, in both measures, and that amount converges only at first order.
