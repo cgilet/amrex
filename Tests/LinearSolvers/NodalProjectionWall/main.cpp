@@ -92,7 +92,24 @@ struct Result
     std::array<Real,4> e_corner{};        // |u_projected - u| / h^2 in the corner cells: (0,0), (n,0), (0,n), (n,n)
     Vector<Real> c_exact;                 // c for L_h applied to the exact velocity
     Vector<Real> c_proj;                  // c for L_h applied to the projected velocity
+    Vector<Real> t_exact;                 // max |L_h u - lap u| of the tangential component in
+    Vector<Real> t_proj;                  // the wall cells (as for c), exact and projected u
 };
+
+// Max |a(tangential component)| over the cells next to each of the four walls, leaving out
+// n/8 cells at each end of every wall (the corners), as wall_fit does
+Real wall_tangential_max (Array4<Real const> const& a, int comp0, int n)
+{
+    int const e = n/8;
+    Real m = 0;
+    for (int t = e; t < n-e; ++t) {
+        for (int w : {0, n-1}) {
+            m = std::max(m, std::abs(a(w,t,0,comp0+1)));   // x walls: v
+            m = std::max(m, std::abs(a(t,w,0,comp0)));     // y walls: u
+        }
+    }
+    return m;
+}
 
 // Least-squares fit of a(normal component) = coef * scale * u_n'' over the cells m cells from
 // each of the four walls, leaving out n/8 cells at each end of every wall (the corners).
@@ -302,6 +319,8 @@ Result run (int n, int max_grid_size, Real rtol, int verbose)
     Result r;
     r.c_exact.resize(nops(), Real(0));
     r.c_proj.resize(nops(), Real(0));
+    r.t_exact.resize(nops(), Real(0));
+    r.t_proj.resize(nops(), Real(0));
     for (int comp = 0; comp < AMREX_SPACEDIM; ++comp) {
         r.e_max = std::max(r.e_max, err.norminf(comp, 0));
     }
@@ -330,6 +349,8 @@ Result run (int n, int max_grid_size, Real rtol, int verbose)
         for (int op = 0; op < nops(); ++op) {
             r.c_exact[op] = -wall_fit(a, AMREX_SPACEDIM*(1+2*op), n, 0, Real(1));
             r.c_proj[op]  = -wall_fit(a, AMREX_SPACEDIM*(2+2*op), n, 0, Real(1));
+            r.t_exact[op] = wall_tangential_max(a, AMREX_SPACEDIM*(1+2*op), n);
+            r.t_proj[op]  = wall_tangential_max(a, AMREX_SPACEDIM*(2+2*op), n);
         }
     }
     return r;
@@ -1510,14 +1531,17 @@ int main (int argc, char* argv[])
             amrex::Print() << line;
         }
 
-        amrex::Print() << "\nViscous operator in the wall cells: (L_h u - lap u)_n = -c u_n''\n"
-                       << "  operator                         n   c, exact u   c, projected u\n";
+        amrex::Print() << "\nViscous operator in the wall cells: (L_h u - lap u)_n = -c u_n'' for the normal\n"
+                       << "component, and max |L_h u - lap u| of the tangential component\n"
+                       << "                                       normal: c                 tangential: max\n"
+                       << "  operator                         n   exact u   projected u     exact u   projected u\n";
         for (int op = 0; op < nops(); ++op) {
             for (int s = 0; s < n_cell.size(); ++s) {
                 auto const& r = results[s];
-                std::snprintf(line, sizeof(line), "  %-28s  %4d   %10.4f   %14.4f\n",
+                std::snprintf(line, sizeof(line), "  %-28s  %4d   %7.4f   %11.4f   %9.4f   %11.4f\n",
                               (s == 0) ? op_name(op).c_str() : "", n_cell[s],
-                              double(r.c_exact[op]), double(r.c_proj[op]));
+                              double(r.c_exact[op]), double(r.c_proj[op]),
+                              double(r.t_exact[op]), double(r.t_proj[op]));
                 amrex::Print() << line;
             }
         }

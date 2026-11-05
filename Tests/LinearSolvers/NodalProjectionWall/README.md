@@ -26,7 +26,8 @@ It prints, in the wall cells and leaving out n/8 cells next to each corner:
 - **The projected wall-normal velocity error** in the first four cells from the wall, divided
   by delta = (h^2/8) u_n''. Here u_n'' is the second normal derivative of the normal velocity
   at the wall.
-- **The operator's wall error,** as the c in (L_h u - lap u)_n = -c u_n''.
+- **The operator's wall error,** as the c in (L_h u - lap u)_n = -c u_n'' for the normal
+  component, and as max |L_h u - lap u| for the tangential component.
 
 It also prints the projected velocity error in the four corner cells divided by h^2, and the
 solve's residual and rhs at the (0,n) lid corner node and its two neighbours.
@@ -98,32 +99,34 @@ cells 0-3 from the wall divided by delta = (h^2/8) u_n''
    128       2.196e-04    0.975    0.926    0.880    0.836     0.0703   0.0703   3.5984   3.5984
    256       5.745e-05    0.987    0.962    0.938    0.914     0.0420   0.0420   3.7652   3.7652
 
-Viscous operator in the wall cells: (L_h u - lap u)_n = -c u_n''
-  operator                         n   c, exact u   c, projected u
-  MLABecLaplacian, maxorder 2     32       0.2495           0.4987
-                                  64       0.2499           0.4997
-                                 128       0.2500           0.4999
-                                 256       0.2500           0.5000
-  MLABecLaplacian, maxorder 3     32       0.0190           0.3505
-                                  64       0.0097           0.3426
-                                 128       0.0049           0.3381
-                                 256       0.0025           0.3358
-  MLABecLaplacian, maxorder 4     32       0.0002           0.3983
-                                  64       0.0001           0.3996
-                                 128       0.0000           0.3999
-                                 256       0.0000           0.4000
-  MLTensorOp,      maxorder 2     32       0.3269           0.6573
-                                  64       0.3305           0.6626
-                                 128       0.3320           0.6648
-                                 256       0.3327           0.6658
-  MLTensorOp,      maxorder 3     32       0.0340           0.4724
-                                  64       0.0176           0.4596
-                                 128       0.0090           0.4523
-                                 256       0.0045           0.4485
-  MLTensorOp,      maxorder 4     32       0.0094           0.5351
-                                  64       0.0048           0.5350
-                                 128       0.0025           0.5344
-                                 256       0.0012           0.5339
+Viscous operator in the wall cells: (L_h u - lap u)_n = -c u_n'' for the normal
+component, and max |L_h u - lap u| of the tangential component
+                                       normal: c                 tangential: max
+  operator                         n   exact u   projected u     exact u   projected u
+  MLABecLaplacian, maxorder 2     32    0.2495        0.4987      5.9988        9.1373
+                                  64    0.2499        0.4997      5.9992        9.1608
+                                 128    0.2500        0.4999      6.0000        9.1670
+                                 256    0.2500        0.5000      5.9998        9.1685
+  MLABecLaplacian, maxorder 3     32    0.0190        0.3505      0.2495        5.4389
+                                  64    0.0097        0.3426      0.1249        5.3750
+                                 128    0.0049        0.3381      0.0625        5.3396
+                                 256    0.0025        0.3358      0.0312        5.3207
+  MLABecLaplacian, maxorder 4     32    0.0002        0.3983      0.0289        6.3021
+                                  64    0.0001        0.3996      0.0075        6.3405
+                                 128    0.0000        0.3999      0.0019        6.3532
+                                 256    0.0000        0.4000      0.0005        6.3578
+  MLTensorOp,      maxorder 2     32    0.3269        0.6573      6.0611        9.3292
+                                  64    0.3305        0.6626      6.0364        9.2643
+                                 128    0.3320        0.6648      6.0195        9.2206
+                                 256    0.3327        0.6658      6.0100        9.1958
+  MLTensorOp,      maxorder 3     32    0.0340        0.4724      0.5525        5.8302
+                                  64    0.0176        0.4596      0.2947        5.5965
+                                 128    0.0090        0.4523      0.1522        5.4572
+                                 256    0.0045        0.4485      0.0773        5.3813
+  MLTensorOp,      maxorder 4     32    0.0094        0.5351      0.3926        6.6498
+                                  64    0.0048        0.5350      0.2103        6.5318
+                                 128    0.0025        0.5344      0.1087        6.4534
+                                 256    0.0012        0.5339      0.0552        6.4091
 ```
 
 ## What it shows
@@ -190,35 +193,43 @@ cells 0-3 from the wall divided by delta = (h^2/8) u_n''
    128       9.948e-05    0.018   -0.005   -0.026   -0.046     0.0016   0.0016   1.6300   1.6300
    256       2.429e-05    0.009   -0.003   -0.014   -0.025     0.0012   0.0012   1.5920   1.5920
 
-Viscous operator in the wall cells: (L_h u - lap u)_n = -c u_n''
-  operator                         n   c, exact u   c, projected u
-  MLABecLaplacian, maxorder 2     32       0.2495           0.2770
-                                  64       0.2499           0.2642
-                                 128       0.2500           0.2573
-                                 256       0.2500           0.2537
-  MLABecLaplacian, maxorder 3     32       0.0190           0.0556
-                                  64       0.0097           0.0288
-                                 128       0.0049           0.0147
-                                 256       0.0025           0.0074
-  MLABecLaplacian, maxorder 4     32       0.0002           0.0445
-                                  64       0.0001           0.0231
-                                 128       0.0000           0.0117
-                                 256       0.0000           0.0059
-  MLTensorOp,      maxorder 2     32       0.3269           0.3662
-                                  64       0.3305           0.3509
-                                 128       0.3320           0.3424
-                                 256       0.3327           0.3380
-  MLTensorOp,      maxorder 3     32       0.0340           0.0882
-                                  64       0.0176           0.0458
-                                 128       0.0090           0.0234
-                                 256       0.0045           0.0118
-  MLTensorOp,      maxorder 4     32       0.0094           0.0761
-                                  64       0.0048           0.0394
-                                 128       0.0025           0.0200
-                                 256       0.0012           0.0101
+Viscous operator in the wall cells: (L_h u - lap u)_n = -c u_n'' for the normal
+component, and max |L_h u - lap u| of the tangential component
+                                       normal: c                 tangential: max
+  operator                         n   exact u   projected u     exact u   projected u
+  MLABecLaplacian, maxorder 2     32    0.2495        0.2770      5.9988        4.6696
+                                  64    0.2499        0.2642      5.9992        4.2163
+                                 128    0.2500        0.2573      6.0000        3.9785
+                                 256    0.2500        0.2537      5.9998        3.8570
+  MLABecLaplacian, maxorder 3     32    0.0190        0.0556      0.2495        3.3096
+                                  64    0.0097        0.0288      0.1249        3.7916
+                                 128    0.0049        0.0147      0.0625        4.0579
+                                 256    0.0025        0.0074      0.0312        4.1977
+  MLABecLaplacian, maxorder 4     32    0.0002        0.0445      0.0289        4.0328
+                                  64    0.0001        0.0231      0.0075        4.5838
+                                 128    0.0000        0.0117      0.0019        4.8873
+                                 256    0.0000        0.0059      0.0005        5.0463
+  MLTensorOp,      maxorder 2     32    0.3269        0.3662      6.0611        4.7459
+                                  64    0.3305        0.3509      6.0364        4.2540
+                                 128    0.3320        0.3424      6.0195        3.9970
+                                 256    0.3327        0.3380      6.0100        3.8663
+  MLTensorOp,      maxorder 3     32    0.0340        0.0882      0.5525        3.0215
+                                  64    0.0176        0.0458      0.2947        3.6414
+                                 128    0.0090        0.0234      0.1522        3.9812
+                                 256    0.0045        0.0118      0.0773        4.1590
+  MLTensorOp,      maxorder 4     32    0.0094        0.0761      0.3926        3.7387
+                                  64    0.0048        0.0394      0.2103        4.4320
+                                 128    0.0025        0.0200      0.1087        4.8102
+                                 256    0.0012        0.0101      0.0552        5.0075
 ```
 
 With `divu_check`, rhs / (h/4) on the bottom-wall nodes is then 0 instead of 1.
+
+The tangential component is not fixed. Its viscous error in the wall cells stays O(1) in every
+mode (maxorder 3: 5.3 without the correction, 4.2 with it, against 0.03 for the exact
+velocity at n = 256): the projection leaves an O(h^2) tangential velocity at the wall, which
+the Dirichlet stencil turns into an O(1) error in the wall cell. See "Closed box in 3D" below
+and section 12 of `WALL_DIVERGENCE.md`.
 
 **Corners.** With `wall_corr=1`, the correction keeps the original stencil at corner nodes.
 That leaves a large error in the corner cells wherever u_n'' is not zero at the corner, as at
@@ -374,9 +385,8 @@ wall_corr=2
   the Dirichlet viscous stencil, which takes the wall value as 0, turns an O(h^2) value at the
   wall into an O(1) second difference in the wall cell. This is not specific to 3D or to
   the edges: the 2D Burggraf case has it too (with maxorder 3, max over the wall cells away
-  from the corners, n = 32 to 256: 3.6 to 4.2 with `wall_corr=2`, 5.4 to 5.3 with 0, for the
-  tangential component; the normal one goes from 1.19 to 0.17 with 2). The 2D output above
-  fits the normal component only.
+  from the corners, n = 32 to 256: 3.6 to 4.2 with `wall_corr=2`, 5.4 to 5.3 with 0, the
+  tangential column of the viscous operator table; the normal component's c goes to 0).
 - **Edges:** every component is tangential to at least one of the two walls, so the edge
   cells carry the same O(1) error. It is about 5 times smaller with the correction (65
   against 326 at n = 128) and, like the tangential face error, does not go to 0. With

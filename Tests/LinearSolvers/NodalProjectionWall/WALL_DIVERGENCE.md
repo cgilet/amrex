@@ -291,15 +291,15 @@ first projection in which cells sit on two and three walls.
 - The 2D Burggraf case has the same: with `maxorder = 3`, the tangential component's viscous
   error in the wall cells is 5.4 to 5.3 without the correction and 3.6 to 4.2 with it
   (n = 32 to 256), while the normal component's goes from 1.19 to 0.17. The reproducer's
-  2D output fits the normal component only, so it does not show this.
+  viscous operator table shows it in its tangential column.
 - In the edge cells every component is tangential to one of the two walls, and the error is
   O(1) the same way: 65 with mode 2 at n = 128, against 326 with mode 0 and 3.9 for the exact
   velocity.
 
 So the wall correction removes the error it was designed for, in the wall-normal component,
 in 3D as in 2D, including along edges. The tangential components' O(1) viscous error at walls
-comes from the projection's O(h^2) slip, not from the wall stencil of the divergence, and is
-roughly halved by the correction. Whether it matters in incflo (it would show in the
+comes from the projection's O(h^2) slip, not from the wall stencil of the divergence. The
+correction reduces it, by about 20% in 2D and half in the 3D box. Whether it matters in incflo (it would show in the
 wall-tangential components of the viscous term or of gp) has not been checked.
 
 ## Reproducing
