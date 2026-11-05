@@ -795,17 +795,18 @@ void mlndlap_divu (int i, int j, int k, Array4<Real> const& rhs, Array4<Real con
     }
 }
 
-// Correction to mlndlap_divu at wall nodes (Neumann boundaries; see
-// MLNodeLaplacian::setWallDivuCorrection).  The control volume of a wall node is half a cell
-// thick in each wall direction.  mlndlap_divu takes each velocity term at the first row of
+// Correction to mlndlap_divu at nodes on walls (Neumann) and inflow faces (see
+// MLNodeLaplacian::setWallDivuCorrection), both called walls here, as mlndlap_divu treats them
+// alike.  The control volume of a wall node is half a cell thick in each wall direction.  mlndlap_divu takes each velocity term at the first row of
 // cells, h/2 from the walls, as constant over it, which makes the divergence first order.  The
 // projected normal velocity near a wall is then too large by (h^2/8) d^2u_n/dn^2, which a
 // viscous operator turns into an O(1) error in the wall-normal pressure gradient.  The
 // correction takes each term of velocity component d instead a quarter cell from each wall t
 // != d, extrapolated linearly from the first two rows: (5/4) row 1 - (1/4) row 2.  The terms
 // are the tangential derivative across the node, or, if d is also a wall direction (at a
-// corner), the flux through the wall and the face h/2 from it.  With mode 1, corners are left
-// alone.  The correction is computed after the Neumann scaling of mlndlap_impose_neumann_bc and
+// corner), the flux through the wall and the face h/2 from it: the first cell minus the ghost
+// cell, which holds the normal velocity on the face (zero at a wall, the inflow velocity at an
+// inflow face).  With mode 1, corners are left alone.  The correction is computed after the Neumann scaling of mlndlap_impose_neumann_bc and
 // divided by its factor 2^nwall here, before it.
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
 void mlndlap_divu_wall_correction (int i, int j, int k, Array4<Real> const& rhs,

@@ -585,7 +585,8 @@ Nodal Divergence at Walls
 
 In a nodal projection, :cpp:`MLNodeLaplacian::compRHS` computes the divergence of the
 cell-centered velocity (and adds the optional cell-centered source) at the nodes. By
-default, this is first order at nodes on a wall (a Neumann domain face). In a viscous
+default, this is first order at nodes on a wall (a Neumann domain face) and on an inflow
+face. In a viscous
 flow with no-slip walls, the wall-normal velocity left by the projection in the cells
 next to the wall is then off by :math:`(h^2/8)\, \partial^2 u_n / \partial n^2`. A viscous
 operator divides this by :math:`h^2`, so the wall-normal pressure gradient in those cells
@@ -601,13 +602,22 @@ on the :cpp:`MLNodeLaplacian` object takes the velocity and the source a quarter
 the wall instead, extrapolated linearly from the first two layers of cells:
 
 - ``mode = 0`` (the default): no correction.
-- ``mode = 1``: the correction at nodes on exactly one wall. Nodes on domain edges and
-  corners keep the original stencil.
-- ``mode = 2``: the correction at all wall nodes. At edges and corners, it is applied in each
-  wall direction.
+- ``mode = 1``: the correction at nodes on exactly one wall or inflow face. Nodes on domain
+  edges and corners keep the original stencil.
+- ``mode = 2``: the correction at all of these nodes. At edges and corners, it is applied in
+  each wall direction.
 
-The correction is not applied at nodes on an inflow face, with RZ coordinates, in boxes
-that contain cut or covered EB cells, or in the sync residual.
+Inflow faces are treated like walls: the projection's control volumes are cut in half
+there in the same way, and the ghost cells hold the inflow velocity on the face. Only
+``mode = 2`` keeps the discrete divergence conservative, so that its sum over the control
+volumes equals the flux through the domain boundary. With ``mode = 1``, a node next to an
+edge or a corner shares half-cell faces with the edge or corner node, and only one of the
+two corrects their flux. For smooth flows this is a small error, but where the velocity
+changes by :math:`O(1)` from cell to cell at a corner (for example a uniform inflow
+against a no-slip wall), it acts as an :math:`O(h)` mass source.
+
+The correction is not applied with RZ coordinates, in boxes that contain cut or covered EB
+cells, or in the sync residual.
 
 With the default :cpp:`maxorder = 2` (see above), the viscous operator itself has an
 :math:`O(1)` truncation error in the cells next to a Dirichlet wall. That error remains

@@ -68,11 +68,13 @@ mlndlap_unimpose_neumann_bc (Box const& bx, Array4<Real> const& rhs, Box const& 
     mlndlap_scale_neumann_bc(0.5, bx, rhs, nddom, lobc, hibc);
 }
 
-// The walls (Neumann domain faces) at a node that the wall correction of setWallDivuCorrection
-// applies to: wall[idim] = +1 for a low face, -1 for a high face, 0 for none.  Returns the
-// number of walls, or 0 if the correction does not apply: the node is on no wall, it is on a
-// non-periodic face that is not a wall (e.g., inflow), or it is on two or more walls (domain
-// edges and corners) and mode is 1.
+// The faces at a node that the wall correction of setWallDivuCorrection applies to, walls
+// (Neumann) and inflow faces: wall[idim] = +1 for a low face, -1 for a high face, 0 for none.
+// mlndlap_divu treats both alike: the control volume is cut in half, and the ghost cells hold
+// the normal velocity on the face (zero at a wall).  Returns the number of such faces, or 0 if
+// the correction does not apply: the node is on none, it is on another non-periodic face
+// (Dirichlet, where the node is not solved for), or it is on two or more (domain edges and
+// corners) and mode is 1.
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
 int mlndlap_wall_correction_faces (IntVect const& node, Box const& nddom,
                                    GpuArray<LinOpBCType,AMREX_SPACEDIM> const& lobc,
@@ -83,12 +85,16 @@ int mlndlap_wall_correction_faces (IntVect const& node, Box const& nddom,
     for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
         wall[idim] = 0;
         if (node[idim] == nddom.smallEnd(idim) && lobc[idim] != LinOpBCType::Periodic) {
-            if (lobc[idim] != LinOpBCType::Neumann) { return 0; }
+            if (lobc[idim] != LinOpBCType::Neumann && lobc[idim] != LinOpBCType::inflow) {
+                return 0;
+            }
             wall[idim] = 1;
             ++nwall;
         }
         if (node[idim] == nddom.bigEnd(idim) && hibc[idim] != LinOpBCType::Periodic) {
-            if (hibc[idim] != LinOpBCType::Neumann) { return 0; }
+            if (hibc[idim] != LinOpBCType::Neumann && hibc[idim] != LinOpBCType::inflow) {
+                return 0;
+            }
             wall[idim] = -1;
             ++nwall;
         }

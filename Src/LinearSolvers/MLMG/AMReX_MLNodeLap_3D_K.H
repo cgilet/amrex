@@ -1346,16 +1346,18 @@ void mlndlap_divu (int i, int j, int k, Array4<Real> const& rhs, Array4<Real con
     }
 }
 
-// Correction to mlndlap_divu at wall nodes (Neumann boundaries; see
-// MLNodeLaplacian::setWallDivuCorrection).  The control volume of a wall node is half a cell
-// thick in each wall direction.  mlndlap_divu takes each velocity term at the first layer of
+// Correction to mlndlap_divu at nodes on walls (Neumann) and inflow faces (see
+// MLNodeLaplacian::setWallDivuCorrection), both called walls here, as mlndlap_divu treats them
+// alike.  The control volume of a wall node is half a cell thick in each wall direction.  mlndlap_divu takes each velocity term at the first layer of
 // cells, h/2 from the walls, as constant over it, which makes the divergence first order.  The
 // projected normal velocity near a wall is then too large by (h^2/8) d^2u_n/dn^2, which a
 // viscous operator turns into an O(1) error in the wall-normal pressure gradient.  The
 // correction takes each term of velocity component d instead a quarter cell from each wall t
 // != d, extrapolated linearly from the first two layers: (5/4) layer 1 - (1/4) layer 2.  The
 // terms are the tangential derivative across the node, or, if d is also a wall direction (at
-// an edge or a corner), the flux through the wall and the face h/2 from it.  Each is averaged
+// an edge or a corner), the flux through the wall and the face h/2 from it: the first cell minus
+// the ghost cell, which holds the normal velocity on the face (zero at a wall, the inflow
+// velocity at an inflow face).  Each is averaged
 // over the two cells on either side of the node in the third direction, or taken in the first
 // cell if that is a wall direction too.  With mode 1, edges and corners are left alone.  The
 // correction is computed after the Neumann scaling of mlndlap_impose_neumann_bc and divided by

@@ -107,7 +107,7 @@ public :
     void setRZCorrection (bool rz) noexcept { m_is_rz = rz; }
 
     /**
-     * \brief Second-order nodal divergence at walls (Neumann domain faces).
+     * \brief Second-order nodal divergence at walls (Neumann domain faces) and inflow faces.
      *
      * By default, the right-hand side built by compRHS is first order at nodes on a wall: it
      * takes the tangential velocity, and the cell-centered source, of the first layer of cells
@@ -117,12 +117,19 @@ public :
      * option, both are instead taken a quarter cell from the wall, extrapolated linearly from
      * the first two layers of cells.
      *
-     * It is not applied at nodes on an inflow face, with RZ coordinates, in boxes that
-     * contain cut or covered EB cells, or in the sync residual.
+     * Inflow faces are treated like walls. The correction assumes, as compRHS does, that the
+     * ghost cells hold the normal velocity on the face. It is not applied with RZ coordinates,
+     * in boxes that contain cut or covered EB cells, or in the sync residual.
      *
-     * \param mode 0 (the default): off. 1: nodes on exactly one wall; nodes on domain edges
-     *             and corners keep the original stencil. 2: all wall nodes, including edges
-     *             and corners, where the extrapolation is done in each wall direction.
+     * Mode 2 keeps the discrete divergence conservative: the sum of the right-hand side over
+     * the control volumes equals the flux through the domain boundary. Mode 1 does not, by a
+     * small amount for smooth flows: a node next to an edge or a corner shares half-cell faces
+     * with the edge or corner node, and only one of the two corrects their flux.
+     *
+     * \param mode 0 (the default): off. 1: nodes on exactly one wall or inflow face; nodes
+     *             on domain edges and corners keep the original stencil. 2: all of these
+     *             nodes, including edges and corners, where the extrapolation is done in each
+     *             wall direction.
      */
     void setWallDivuCorrection (int mode) noexcept { m_wall_divu_corr = mode; }
 

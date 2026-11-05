@@ -1186,7 +1186,7 @@ MLNodeLaplacian::compRHS (const Vector<MultiFab*>& rhs, const Vector<MultiFab*>&
                             || factory == nullptr || factory->isAllRegular());
 #endif
 
-        // Second-order divergence at wall nodes (setWallDivuCorrection; see
+        // Second-order divergence at wall and inflow nodes (setWallDivuCorrection; see
         // mlndlap_divu_wall_correction and mlndlap_rhcc_wall_correction).  Not for RZ.  With EB,
         // it is only applied in regular boxes: cut cells use mlndlap_divu_eb and
         // mlndlap_rhcc_eb, which have no such correction.
