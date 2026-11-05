@@ -236,10 +236,11 @@ incflo's viscous solve is Neumann at a pressure outflow, so an offset there is n
   converging in a manufactured solution with div(u) = S (incflo probtype 605, branch
   `divu_source_validation`). Mode 2 is conservative and treats the velocity and the source alike; whether
   it converges there is the deciding incflo test.
-- **3D corners** where three walls meet: the reproducer's conservation check now covers them
-  (walls on all six faces; mode 2 conservative to round-off, mode 1 not), but no projection
-  test does (the reproducer's solves and the 3D manufactured solution are periodic in one
-  direction).
+- **3D edges and corners**: the reproducer's conservation check and its closed 3D box cover
+  them (section 12). Mode 2 is conservative there and its divergence second order along the
+  edges. The corners of the box's velocity have u_n'' = 0, so they test little.
+- **The tangential components** (section 12): their viscous error next to a wall stays O(1)
+  with the correction, in 2D and 3D. The correction does not address it.
 - **incflo inflow cases** with viscosity and u_n'' != 0 at the inflow have not been run.
 - **EB** is not supported: the correction applies in regular boxes only, and only the build
   has been checked.
@@ -270,6 +271,36 @@ node, not where they differ in size. The missing wall correction is O(h) on top 
 Along the coarse/fine boundary away from its corners, the rhs is O(h), first order, like an
 uncorrected wall. Extending the correction to the coarse/fine nodes on a wall would not make
 them second order. That would need a coarse/fine stencil that is consistent for linear fields.
+
+## 12. The closed 3D box, and the tangential components
+
+The reproducer projects u = grad(Phi) x (1,2,3), Phi = F(x) F(y) H(z), in a box with walls on
+all six faces, one of them a lid moving tangentially (README, "Closed box in 3D"). It is the
+first projection in which cells sit on two and three walls.
+
+- The divergence of the exact velocity is second order with mode 2 on the faces and along the
+  edges (max |rhs| / h halves with h: 27.6, 15.4, 8.1, 4.2 on the edges for n = 16 to 128),
+  and first order along the edges with modes 0 and 1 (113 to 126).
+- On the faces, the normal component behaves as in 2D: the wall-normal error / delta and c go
+  to 0 at O(h) with the correction.
+- The tangential components do not. The projection leaves a tangential velocity of O(h^2) at
+  the wall, and the viscous operator's Dirichlet stencil, which takes the wall value as 0,
+  sees that as an O(h^2) jump over half a cell: an O(1) error in the wall cell. With
+  `maxorder = 3` its maximum on the faces is 82 without the correction and 40 to 45 with it
+  (n = 16 to 128), against 3.3 for the exact velocity at n = 128.
+- The 2D Burggraf case has the same: with `maxorder = 3`, the tangential component's viscous
+  error in the wall cells is 5.4 to 5.3 without the correction and 3.6 to 4.2 with it
+  (n = 32 to 256), while the normal component's goes from 1.19 to 0.17. The reproducer's
+  2D output fits the normal component only, so it does not show this.
+- In the edge cells every component is tangential to one of the two walls, and the error is
+  O(1) the same way: 65 with mode 2 at n = 128, against 326 with mode 0 and 3.9 for the exact
+  velocity.
+
+So the wall correction removes the error it was designed for, in the wall-normal component,
+in 3D as in 2D, including along edges. The tangential components' O(1) viscous error at walls
+comes from the projection's O(h^2) slip, not from the wall stencil of the divergence, and is
+roughly halved by the correction. Whether it matters in incflo (it would show in the
+wall-tangential components of the viscous term or of gp) has not been checked.
 
 ## Reproducing
 

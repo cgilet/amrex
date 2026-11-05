@@ -54,6 +54,10 @@ correction and 0 with it. Three more checks without a solve follow:
   the rhs at the corners of the coarse/fine boundary (the two on the wall, and the fine
   level's corner away from it), and the largest rhs / (h/4) at the other coarse/fine nodes.
   See "Two AMR levels" below.
+- **A closed box in 3D** (`box3d = 1`, resolutions `box3d_n_cell`, 3D only): walls on all six
+  faces, so that cells sit on two walls (edges) and three (corners). It projects a
+  divergence-free velocity that depends on all three coordinates and applies the viscous
+  operators, as for Burggraf. See "Closed box in 3D" below.
 - **The Burggraf rhs near the corners:** rhs / h^2 on the 3x3 nodes at the (0,0) and the
   (0,n) lid corner.
 
@@ -64,8 +68,8 @@ make -j4 AMREX_HOME=/path/to/amrex       # DIM=3 for 3D
 mpiexec -n 2 ./main2d.gnu.MPI.ex inputs
 ```
 
-`n_cell`, `max_grid_size`, `rtol`, `verbose`, `maxorders`, `wall_corr`, `divu_check` and
-`channel` can be set in `inputs` or on the command line. `inputs` uses `wall_corr = 2`; add `wall_corr=0` on
+`n_cell`, `max_grid_size`, `rtol`, `verbose`, `maxorders`, `wall_corr`, `divu_check`,
+`channel`, `box3d` and `box3d_n_cell` can be set in `inputs` or on the command line. `inputs` uses `wall_corr = 2`; add `wall_corr=0` on
 the command line to see the error. It takes a few seconds. Apart from the numbers that are
 zero to round-off or to the solver tolerance (the solve's residual, and the conservation and
 uniform-inflow flux errors where they are zero), the output does not depend on
@@ -306,6 +310,80 @@ velocity; nothing else changes in any mode.
 
 So a fine level on a wall gets the correction wherever it can make a difference; the
 coarse/fine nodes on the wall are limited by the coarse/fine stencil itself.
+
+## Closed box in 3D
+
+The periodic-z cases have no cell on more than two walls, and Burggraf in 3D does not depend
+on z. The closed box projects
+
+    u = grad(Phi) x (1, 2, 3),   Phi = F(x) F(y) H(z),   F = 16 s^2 (1-s)^2,   H = 8 s^2 (1-s)
+
+on [0,1]^3 with walls on all six faces. It is divergence-free and zero on five of them; at
+z = 1 it moves tangentially, proportional to F(x) F(y), like the Burggraf lid. The normal
+velocity grows like the square of the distance from each wall, so u_n'' != 0 on every face.
+No-slip on two walls forces u_n'' to 0 along the edge between them; the lid keeps it nonzero
+along the lid's four edges (at its corners it still goes to 0, quadratically). The exact
+Laplacian, grad(lap Phi) x (1,2,3), is known in closed form.
+
+Nodal divergence of the exact velocity, max |rhs| / h (O(1) first order, O(h) second):
+
+```
+            interior        face        edge      corner
+wall_corr=0
+    16       11.9458     91.4926    113.3872      2.4797
+    32        6.8924    107.0639    120.3903      0.6824
+    64        3.7070    116.7839    124.1034      0.1789
+wall_corr=1: faces as with 2, edges as with 0
+wall_corr=2
+    16       11.9458     23.6854     27.5970      3.6511
+    32        6.8924     13.5829     15.3610      1.1841
+    64        3.7070      7.3503      8.0914      0.3340
+   128        1.9244      3.8319      4.1545      0.0885
+```
+
+With `wall_corr=2` the divergence is second order on the faces and along the edges. The corner
+values are small in every mode, since u_n'' goes to 0 at the corners of this velocity.
+
+Projected velocity, and `MLABecLaplacian` with maxorder 3 (`MLTensorOp` is similar). "cell 0"
+is the wall-normal error / delta on the faces, c is fitted to the normal component on the
+faces, and the other columns are maxima over the face cells (tangential components) and the
+edge cells (all components), exact and projected velocity:
+
+```
+     n   cell 0   c, exact   c, proj    face t., exact   proj    edge, exact   proj
+wall_corr=0
+    16    0.763     0.052     0.376        2.36e+01   8.36e+01     2.90e+01   2.77e+02
+    32    0.875     0.028     0.358        1.25e+01   8.17e+01     1.52e+01   3.00e+02
+    64    0.935     0.014     0.347        6.46e+00   8.20e+01     7.81e+00   3.16e+02
+   128    0.967     0.007     0.340        3.28e+00   8.20e+01     3.95e+00   3.26e+02
+wall_corr=2
+    16    0.204     0.052     0.150        2.36e+01   3.95e+01     2.90e+01   1.13e+02
+    32    0.117     0.028     0.081        1.25e+01   4.12e+01     1.52e+01   6.52e+01
+    64    0.063     0.014     0.042        6.46e+00   4.32e+01     7.81e+00   5.56e+01
+   128    0.033     0.007     0.021        3.28e+00   4.46e+01     3.95e+00   6.47e+01
+```
+
+(n = 128 with `box3d_n_cell="64 128" maxorders=3`; about 1.3 GB.)
+
+- **Faces, normal component:** as in 2D. Without the correction the error is delta and c is
+  O(1); with it both go to 0 at O(h).
+- **Faces, tangential components:** the viscous error of the projected velocity is O(1) in
+  every mode (82 without the correction, 45 with it). The projection leaves an O(h^2)
+  tangential velocity at the wall (max |u_P - u| / h^2 in the face cells is about 16 for the
+  tangential components with `wall_corr=2`, against 3.7 and falling for the normal one), and
+  the Dirichlet viscous stencil, which takes the wall value as 0, turns an O(h^2) value at the
+  wall into an O(1) second difference in the wall cell. This is not specific to 3D or to
+  the edges: the 2D Burggraf case has it too (with maxorder 3, max over the wall cells away
+  from the corners, n = 32 to 256: 3.6 to 4.2 with `wall_corr=2`, 5.4 to 5.3 with 0, for the
+  tangential component; the normal one goes from 1.19 to 0.17 with 2). The 2D output above
+  fits the normal component only.
+- **Edges:** every component is tangential to at least one of the two walls, so the edge
+  cells carry the same O(1) error. It is about 5 times smaller with the correction (65
+  against 326 at n = 128) and, like the tangential face error, does not go to 0. With
+  `wall_corr=1` the edges are not corrected and the edge error is 198 to 234.
+- **Corners:** u_n'' goes to 0 at the corners of this velocity, so they test little; the
+  projected-velocity viscous error there is 19 to 9 with `wall_corr=0`, 3.4 to 2.1 with 2
+  (n = 64, 128).
 
 ## Where a wall meets an inflow or an outflow face
 

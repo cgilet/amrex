@@ -979,6 +979,323 @@ std::array<Real,6> amr_wall_check (int n, int max_grid_size, int field)
     return r;
 }
 
+#if (AMREX_SPACEDIM == 3)
+// A closed box in 3D, walls on all six faces, so that it has cells on two walls (edges) and on
+// three (corners), which the periodic-z cases above do not.  The velocity is u = curl(Phi c) =
+// grad(Phi) x c with Phi = F(x) F(y) H(z), F(s) = 16 s^2 (1-s)^2, H(s) = 8 s^2 (1-s) and
+// c = (1, 2, 3).  It is divergence-free and zero on five walls (F and F' vanish at 0 and 1, H
+// and H' at 0); at z = 1, H = 0 but H' != 0, so that face is a lid moving tangentially with
+// velocity proportional to F(x) F(y), like the Burggraf lid.  The normal velocity grows like
+// the square of the distance from each wall.  Without the lid, u_n'' would vanish (linearly)
+// along every edge, as no-slip on both walls forces; with it, u_n'' != 0 along the lid's
+// edges (at the lid's corners it still vanishes, quadratically: the lid velocity has to go
+// to zero at the side walls).  The Laplacian is grad(lap Phi) x c.  It is projected and the
+// viscous operators applied as in run, with the lid velocity as their Dirichlet value at z = 1.
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+Real box3d_fac (int d, Real s, int der)   // der-th derivative of F (d = 0, 1) or H (d = 2)
+{
+    if (d < 2) {
+        if (der == 0) { return Real(16)*s*s*(Real(1)-s)*(Real(1)-s); }
+        if (der == 1) { return Real(16)*(Real(2)*s - Real(6)*s*s + Real(4)*s*s*s); }
+        if (der == 2) { return Real(16)*(Real(2) - Real(12)*s + Real(12)*s*s); }
+        if (der == 3) { return Real(16)*(Real(-12) + Real(24)*s); }
+        return Real(16)*Real(24);
+    }
+    if (der == 0) { return Real(8)*s*s*(Real(1)-s); }
+    if (der == 1) { return Real(16)*s - Real(24)*s*s; }
+    if (der == 2) { return Real(16) - Real(48)*s; }
+    if (der == 3) { return Real(-48); }
+    return Real(0);
+}
+
+// The derivative of Phi of order o[d] in each direction d, at p
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+Real box3d_phi (GpuArray<Real,3> const& p, GpuArray<int,3> const& o)
+{
+    return box3d_fac(0, p[0], o[0]) * box3d_fac(1, p[1], o[1]) * box3d_fac(2, p[2], o[2]);
+}
+
+// Component comp of g x c, c = (1, 2, 3), where g_a is the derivative of Phi of order
+// o_extra + 1 in direction a (g = grad Phi for o_extra = 0)
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+Real box3d_cross (GpuArray<Real,3> const& p, GpuArray<int,3> const& o_extra, int comp)
+{
+    GpuArray<Real,3> g;
+    for (int a = 0; a < 3; ++a) {
+        GpuArray<int,3> o = o_extra;
+        ++o[a];
+        g[a] = box3d_phi(p, o);
+    }
+    Real const c0 = 1, c1 = 2, c2 = 3;
+    if (comp == 0) { return g[1]*c2 - g[2]*c1; }
+    if (comp == 1) { return g[2]*c0 - g[0]*c2; }
+    return g[0]*c1 - g[1]*c0;
+}
+
+// The velocity (lap = 0) or its Laplacian (lap = 1), component comp, at (x, y, z)
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+Real box3d_vel (Real x, Real y, Real z, int comp, int lap)
+{
+    GpuArray<Real,3> const p{x, y, z};
+    if (lap == 0) { return box3d_cross(p, GpuArray<int,3>{0, 0, 0}, comp); }
+    Real r = 0;
+    for (int e = 0; e < 3; ++e) {
+        GpuArray<int,3> o{0, 0, 0};
+        o[e] = 2;
+        r += box3d_cross(p, o, comp);
+    }
+    return r;
+}
+
+// u_n'' at the wall normal to direction d, at the point p on it
+Real box3d_unn (int d, GpuArray<Real,3> const& p)
+{
+    GpuArray<int,3> o{0, 0, 0};
+    o[d] = 2;
+    return box3d_cross(p, o, d);
+}
+
+// Least-squares fit of a(normal component) = coef * scale * u_n'' over the cells m cells from
+// each of the six walls, leaving out n/8 cells next to the other walls (the edges).
+Real box3d_fit (Array4<Real const> const& a, int comp0, int n, int m, Real scale)
+{
+    Real const h = Real(1)/Real(n);
+    int const e = n/8;
+    Real num = 0, den = 0;
+    for (int d = 0; d < 3; ++d) {
+        int const t1 = (d+1)%3, t2 = (d+2)%3;
+        for (int side = 0; side < 2; ++side) {
+            for (int b = e; b < n-e; ++b) {
+            for (int c = e; c < n-e; ++c) {
+                IntVect iv;
+                iv[d] = (side == 0) ? m : n-1-m;
+                iv[t1] = b;
+                iv[t2] = c;
+                GpuArray<Real,3> p;
+                p[d] = Real(side);
+                p[t1] = (Real(b)+Real(0.5))*h;
+                p[t2] = (Real(c)+Real(0.5))*h;
+                Real const r = scale * box3d_unn(d, p);
+                num += a(iv,comp0+d) * r;
+                den += r * r;
+            }}
+        }
+    }
+    return num/den;
+}
+
+struct Box3dResult
+{
+    Real res = 0;                   // max residual of the solve
+    std::array<Real,4> rhs_h{};     // max |rhs| / h of the exact velocity: interior, face, edge
+                                    // and corner nodes
+    Real e_max = 0;                 // max |u_P - u|
+    std::array<Real,2> e_delta{};   // wall-normal error / delta in cells 0 and 1, faces only
+    std::array<Real,4> e_h2{};      // max |u_P - u| / h^2: face cells (normal, then tangential
+                                    // components), edge cells, corner cells
+    Vector<Real> c_exact, c_proj;   // c, faces only
+    Vector<std::array<Real,6>> v;   // max |L_h u - lap u|, exact then projected u: tangential
+                                    // components in the face cells, edge cells, corner cells
+};
+
+Box3dResult box3d_run (int n, int max_grid_size, Real rtol, int verbose)
+{
+    Real const h = Real(1)/Real(n);
+    Box const domain(IntVect(0), IntVect(n-1));
+    RealBox const rb({Real(0), Real(0), Real(0)}, {Real(1), Real(1), Real(1)});
+    Array<int,AMREX_SPACEDIM> const is_periodic{0, 0, 0};
+    Geometry const geom(domain, rb, CoordSys::cartesian, is_periodic);
+    BoxArray ba(domain);
+    ba.maxSize(max_grid_size);
+    DistributionMapping const dm(ba);
+
+    // Exact velocity in the valid cells, zero in the ghost cells (the wall velocity)
+    MultiFab vel(ba, dm, 3, 1);
+    MultiFab lap_exact(ba, dm, 3, 0);
+    vel.setVal(0.0);
+    for (MFIter mfi(vel); mfi.isValid(); ++mfi) {
+        auto const& v = vel.array(mfi);
+        auto const& l = lap_exact.array(mfi);
+        ParallelFor(mfi.validbox(), 3, [=] AMREX_GPU_DEVICE (int i, int j, int k, int c) noexcept
+        {
+            Real const x = (Real(i)+Real(0.5))*h;
+            Real const y = (Real(j)+Real(0.5))*h;
+            Real const z = (Real(k)+Real(0.5))*h;
+            v(i,j,k,c) = box3d_vel(x, y, z, c, 0);
+            l(i,j,k,c) = box3d_vel(x, y, z, c, 1);
+        });
+    }
+    vel.FillBoundary();
+    MultiFab vel_exact(ba, dm, 3, 1);
+    MultiFab::Copy(vel_exact, vel, 0, 0, 3, 1);
+
+    Box3dResult r;
+    {
+        Array<LinOpBCType,AMREX_SPACEDIM> const bc{LinOpBCType::Neumann, LinOpBCType::Neumann,
+                                                   LinOpBCType::Neumann};
+        MLNodeLaplacian linop({geom}, {ba}, {dm});
+        linop.setDomainBC(bc, bc);
+        MultiFab sigma(ba, dm, 1, 0);
+        sigma.setVal(1.0);
+        linop.setSigma(0, sigma);
+        linop.setWallDivuCorrection(wall_corr);
+        BoxArray const nba = amrex::convert(ba, IntVect::TheNodeVector());
+        MultiFab rhs(nba, dm, 1, 0);
+        MultiFab phi(nba, dm, 1, 1);
+        phi.setVal(0.0);
+        linop.compRHS({&rhs}, {&vel}, {}, {});
+        {
+            // The exact velocity is divergence-free: |rhs| / h is O(1) where the divergence is
+            // first order and O(h) where it is second order
+            DistributionMapping const dm1(Vector<int>{ParallelDescriptor::IOProcessorNumber()});
+            MultiFab rhs1(BoxArray(amrex::surroundingNodes(domain)), dm1, 1, 0,
+                          MFInfo().SetArena(The_Pinned_Arena()));
+            rhs1.ParallelCopy(rhs, 0, 0, 1);
+            Gpu::streamSynchronize();
+            for (MFIter mfi(rhs1); mfi.isValid(); ++mfi) {
+                auto const& a = rhs1.const_array(mfi);
+                amrex::LoopOnCpu(mfi.validbox(), [&] (int i, int j, int k)
+                {
+                    int const nw = int(i == 0 || i == n) + int(j == 0 || j == n)
+                        + int(k == 0 || k == n);
+                    r.rhs_h[nw] = std::max(r.rhs_h[nw], std::abs(a(i,j,k))/h);
+                });
+            }
+        }
+        MLMG mlmg(linop);
+        mlmg.setVerbose(verbose);
+        mlmg.solve({&phi}, {&rhs}, rtol, Real(0));
+        MultiFab res(nba, dm, 1, 0);
+        mlmg.compResidual({&res}, {&phi}, {&rhs});
+        r.res = res.norminf();
+        MultiFab flux(ba, dm, 3, 0);
+        mlmg.getFluxes({&flux});
+        MultiFab::Add(vel, flux, 0, 0, 3, 0);
+        vel.FillBoundary();
+    }
+
+    // The viscous operators, Dirichlet with zero wall values on every face
+    Array<LinOpBCType,AMREX_SPACEDIM> const vbc{LinOpBCType::Dirichlet, LinOpBCType::Dirichlet,
+                                                LinOpBCType::Dirichlet};
+    LPInfo info;
+    info.setMaxCoarseningLevel(0);
+    auto apply_op = [&] (int op, MultiFab& out, MultiFab const& in)
+    {
+        MultiFab vin(ba, dm, 3, 1);
+        MultiFab::Copy(vin, in, 0, 0, 3, 0);
+        // The ghost cells hold the wall values: zero, except the lid velocity above z = 1,
+        // including past the box edges along the lid (MLTensorOp's cross terms use them)
+        vin.setBndry(0.0);
+        for (MFIter mfi(vin); mfi.isValid(); ++mfi) {
+            Box const& vbx = mfi.validbox();
+            if (vbx.bigEnd(2) != n-1) { continue; }
+            Box const lid = amrex::grow(amrex::adjCellHi(vbx, 2), IntVect(1,1,0));
+            auto const& v = vin.array(mfi);
+            ParallelFor(lid, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+            {
+                if (i >= 0 && i < n && j >= 0 && j < n) {
+                    Real const x = (Real(i)+Real(0.5))*h;
+                    Real const y = (Real(j)+Real(0.5))*h;
+                    v(i,j,k,0) = box3d_vel(x, y, Real(1), 0, 0);
+                    v(i,j,k,1) = box3d_vel(x, y, Real(1), 1, 0);
+                }
+            });
+        }
+        vin.FillBoundary();
+        int const nmo = int(maxorders.size());
+        int const maxorder = maxorders[op % nmo];
+        if (op < nmo) {
+            MLABecLaplacian lap({geom}, {ba}, {dm}, info);
+            lap.setMaxOrder(maxorder);
+            lap.setDomainBC(vbc, vbc);
+            lap.setScalars(0.0, -1.0);
+            lap.setACoeffs(0, Real(1));
+            lap.setBCoeffs(0, Real(1));
+            MultiFab ci(ba, dm, 1, 1);
+            MultiFab co(ba, dm, 1, 0);
+            for (int comp = 0; comp < 3; ++comp) {
+                MultiFab::Copy(ci, vin, comp, 0, 1, 1);
+                lap.setLevelBC(0, &ci);
+                MLMG mlmg(lap);
+                mlmg.apply({&co}, {&ci});
+                MultiFab::Copy(out, co, 0, comp, 1, 0);
+            }
+        } else {
+            MLTensorOp tensor({geom}, {ba}, {dm}, info);
+            tensor.setMaxOrder(maxorder);
+            tensor.setDomainBC(Vector<Array<LinOpBCType,AMREX_SPACEDIM>>(3, vbc),
+                               Vector<Array<LinOpBCType,AMREX_SPACEDIM>>(3, vbc));
+            tensor.setScalars(0.0, -1.0);
+            tensor.setACoeffs(0, Real(1));
+            tensor.setShearViscosity(0, Real(1));
+            tensor.setLevelBC(0, &vin);
+            MLMG mlmg(tensor);
+            mlmg.apply({&out}, {&vin});
+        }
+        MultiFab::Subtract(out, lap_exact, 0, 0, 3, 0);
+    };
+
+    int const ncomp = 3 * (1 + 2*nops());
+    MultiFab err(ba, dm, ncomp, 0);
+    MultiFab::LinComb(err, Real(1), vel, 0, Real(-1), vel_exact, 0, 0, 3, 0);
+    for (int op = 0; op < nops(); ++op) {
+        MultiFab tmp(ba, dm, 3, 0);
+        apply_op(op, tmp, vel_exact);
+        MultiFab::Copy(err, tmp, 0, 3*(1+2*op), 3, 0);
+        apply_op(op, tmp, vel);
+        MultiFab::Copy(err, tmp, 0, 3*(2+2*op), 3, 0);
+    }
+    for (int comp = 0; comp < 3; ++comp) {
+        r.e_max = std::max(r.e_max, err.norminf(comp, 0));
+    }
+
+    // Gather onto one box on the I/O rank
+    DistributionMapping const dm1(Vector<int>{ParallelDescriptor::IOProcessorNumber()});
+    MultiFab all(BoxArray(domain), dm1, ncomp, 0, MFInfo().SetArena(The_Pinned_Arena()));
+    all.ParallelCopy(err, 0, 0, ncomp);
+    Gpu::streamSynchronize();
+    r.c_exact.resize(nops(), Real(0));
+    r.c_proj.resize(nops(), Real(0));
+    r.v.resize(nops(), std::array<Real,6>{});
+    for (MFIter mfi(all); mfi.isValid(); ++mfi) {
+        auto const& a = all.const_array(mfi);
+        for (int m = 0; m < 2; ++m) {
+            r.e_delta[m] = box3d_fit(a, 0, n, m, h*h/Real(8));
+        }
+        for (int op = 0; op < nops(); ++op) {
+            r.c_exact[op] = -box3d_fit(a, 3*(1+2*op), n, 0, Real(1));
+            r.c_proj[op]  = -box3d_fit(a, 3*(2+2*op), n, 0, Real(1));
+        }
+        // Face cells are those n/8 or more from the other walls, as in the fits
+        int const e = n/8;
+        amrex::LoopOnCpu(domain, [&] (int i, int j, int k)
+        {
+            IntVect const iv(i,j,k);
+            int nw = 0, dn = 0;
+            for (int d = 0; d < 3; ++d) {
+                if (iv[d] == 0 || iv[d] == n-1) { ++nw; dn = d; }
+            }
+            if (nw == 0) { return; }
+            if (nw == 1) {
+                for (int d = 0; d < 3; ++d) {
+                    if (d != dn && (iv[d] < e || iv[d] >= n-e)) { return; }
+                }
+            }
+            for (int c = 0; c < 3; ++c) {
+                int const q = (nw == 1) ? ((c == dn) ? 0 : 1) : nw;
+                r.e_h2[q] = std::max(r.e_h2[q], std::abs(a(i,j,k,c))/(h*h));
+                if (q == 0) { continue; }
+                for (int op = 0; op < nops(); ++op) {
+                    r.v[op][2*(q-1)]   = std::max(r.v[op][2*(q-1)],   std::abs(a(i,j,k,3*(1+2*op)+c)));
+                    r.v[op][2*(q-1)+1] = std::max(r.v[op][2*(q-1)+1], std::abs(a(i,j,k,3*(2+2*op)+c)));
+                }
+            }
+        });
+    }
+    return r;
+}
+#endif
+
 // A uniform inflow against no-slip walls: the channel of channel_run, with u = 1 in the inflow
 // ghost cells up to the walls, where u = 0.  The data do not match at the wall/inflow corners,
 // and the velocity is singular there.  The velocity projected is
@@ -1254,6 +1571,67 @@ int main (int argc, char* argv[])
             }
             amrex::Print() << '\n';
         }
+        // The closed box is 3D only; the inputs are read in 2D too, so that they are not
+        // reported as unused
+        int box3d = 0;
+        pp.query("box3d", box3d);
+        Vector<int> b3n;
+        if (!pp.queryarr("box3d_n_cell", b3n)) {
+            b3n = {16, 32, 64};
+        }
+#if (AMREX_SPACEDIM == 3)
+        if (box3d != 0) {
+            Vector<Box3dResult> b3;
+            for (int n : b3n) {
+                b3.push_back(box3d_run(n, max_grid_size, rtol, verbose));
+            }
+            amrex::Print() << "Closed box, walls on all six faces: u = grad(Phi) x (1,2,3), Phi = F(x)F(y)H(z),\n"
+                           << "F = 16 s^2 (1-s)^2, H = 8 s^2 (1-s): no-slip, with a lid at z = 1 moving\n"
+                           << "tangentially.  Projected velocity: residual of the solve, max error, the\n"
+                           << "wall-normal error / delta = (h^2/8) u_n'' in cells 0 and 1 of the faces, and\n"
+                           << "max |u_P - u| / h^2 in the face cells (normal and tangential components), the\n"
+                           << "edge cells (on two walls) and the corner cells (on three).  Face cells are n/8\n"
+                           << "or more from the other walls.  Bounded / h^2 is second order\n"
+                           << "     n    residual   max |u_P - u|   cell 0   cell 1    face n.   face t.      edge    corner\n";
+            for (int s = 0; s < b3n.size(); ++s) {
+                auto const& q = b3[s];
+                std::snprintf(line, sizeof(line),
+                              "  %4d   %9.2e   %13.3e   %6.3f   %6.3f   %8.3f  %8.3f  %8.3f  %8.3f\n",
+                              b3n[s], double(q.res), double(q.e_max), double(q.e_delta[0]),
+                              double(q.e_delta[1]), double(q.e_h2[0]), double(q.e_h2[1]),
+                              double(q.e_h2[2]), double(q.e_h2[3]));
+                amrex::Print() << line;
+            }
+            amrex::Print() << "\nClosed box, nodal divergence of the exact (divergence-free) velocity, max |rhs| / h:\n"
+                           << "O(1) where it is first order, O(h) where it is second order\n"
+                           << "     n    interior        face        edge      corner\n";
+            for (int s = 0; s < b3n.size(); ++s) {
+                auto const& q = b3[s];
+                std::snprintf(line, sizeof(line), "  %4d   %9.4f   %9.4f   %9.4f   %9.4f\n", b3n[s],
+                              double(q.rhs_h[0]), double(q.rhs_h[1]), double(q.rhs_h[2]),
+                              double(q.rhs_h[3]));
+                amrex::Print() << line;
+            }
+            amrex::Print() << "\nClosed box, viscous operator: c in (L_h u - lap u)_n = -c u_n'' in the face cells\n"
+                           << "(normal component), and max |L_h u - lap u| of the tangential components in the\n"
+                           << "face cells, and of all components in the edge and the corner cells, for the\n"
+                           << "exact (ex.) and the projected (pr.) velocity\n"
+                           << "  operator                         n  c, ex.  c, pr.   face t., ex.  pr.          edge, ex.  pr.           corner, ex. pr.\n";
+            for (int op = 0; op < nops(); ++op) {
+                for (int s = 0; s < b3n.size(); ++s) {
+                    auto const& q = b3[s];
+                    std::snprintf(line, sizeof(line),
+                                  "  %-28s  %4d  %6.3f  %6.3f   %9.2e %9.2e   %9.2e %9.2e   %9.2e %9.2e\n",
+                                  (s == 0) ? op_name(op).c_str() : "", b3n[s],
+                                  double(q.c_exact[op]), double(q.c_proj[op]),
+                                  double(q.v[op][0]), double(q.v[op][1]), double(q.v[op][2]),
+                                  double(q.v[op][3]), double(q.v[op][4]), double(q.v[op][5]));
+                    amrex::Print() << line;
+                }
+            }
+            amrex::Print() << '\n';
+        }
+#endif
     }
     amrex::Finalize();
 }
