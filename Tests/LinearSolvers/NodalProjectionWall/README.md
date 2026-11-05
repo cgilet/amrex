@@ -14,7 +14,8 @@ z, w = 0, and z is periodic. For n = 32, 64, 128 and 256 cells per side it:
 
 1. projects the velocity once with `MLNodeLaplacian`, as AMReX-Hydro's `NodalProjector` does
    in incflo (walls are Neumann for phi, sigma = 1, zero velocity in the ghost cells), with
-   the wall correction `MLNodeLaplacian::setWallDivuCorrection` on or off (`wall_corr`), and
+   the wall correction `MLNodeLaplacian::setWallDivuCorrection(wall_corr)`: 0 off, 1 at nodes
+   on one wall, 2 also at corners, and
 2. applies the viscous operators incflo uses, with Dirichlet walls and each maxorder in
    `maxorders`, to the exact velocity and to the projected one. The operators are
    `MLABecLaplacian` on each component (incflo's scalar solve) and `MLTensorOp` (incflo's
@@ -27,11 +28,21 @@ It prints, in the wall cells and leaving out n/8 cells next to each corner:
   at the wall.
 - **The operator's wall error,** as the c in (L_h u - lap u)_n = -c u_n''.
 
+It also prints the projected velocity error in the four corner cells divided by h^2, and the
+solve's residual and rhs at the (0,n) lid corner node and its two neighbours.
+
 With `divu_check = 1`, it first checks the nodal divergence stencil directly, with no solve:
 it calls `compRHS` for u = (x y, -y^2/2), which is divergence-free with u_n'' = -1 on the bottom
 wall. It prints the largest |rhs| at interior nodes, which is 0 because the stencil is exact
 for quadratics there, and rhs / (h/4) on the bottom-wall nodes. That is 1 without the wall
-correction and 0 with it.
+correction and 0 with it. Two more checks without a solve follow:
+
+- **A cell-centred source:** u = (x (y+y^2), y (x+x^2)) with S = div u, so compRHS with the
+  source should give 0. It prints max |rhs| / h^2 at interior nodes, on the walls and at the
+  (0,0) corner: O(1) would be second order, O(1/h) first. It is 0 in every mode, so the
+  velocity and the source are treated consistently.
+- **The Burggraf rhs near the corners:** rhs / h^2 on the 3x3 nodes at the (0,0) and the
+  (0,n) lid corner.
 
 ## Build and run
 
@@ -41,12 +52,12 @@ mpiexec -n 2 ./main2d.gnu.MPI.ex inputs
 ```
 
 `n_cell`, `max_grid_size`, `rtol`, `verbose`, `maxorders`, `wall_corr` and `divu_check` can be
-set in `inputs` or on the command line. `inputs` turns the wall correction on; add
-`wall_corr=0` on the command line to see the error. It takes a few seconds. The output does
-not depend on `max_grid_size` (checked with 16, 32 and 1024), and 3D (8 cells in z) prints
-the same numbers as 2D.
+set in `inputs` or on the command line. `inputs` uses `wall_corr = 2`; add `wall_corr=0` on
+the command line to see the error. It takes a few seconds. Apart from the solve's residual,
+which is at round-off, the output does not depend on `max_grid_size` (checked with 16, 32 and
+1024), and 3D (8 cells in z) prints the same numbers as 2D.
 
-## Output without the wall correction (`wall_corr=0`)
+## Output without the wall correction (`wall_corr=0`, excerpt)
 
 ```
 Nodal divergence of u = (x y, -y^2/2) (div u = 0, u_n'' = -1 on the bottom
@@ -61,11 +72,11 @@ nodes away from the corners (mean, min, max)
 
 Projected Burggraf velocity: max error, and the wall-normal error in the
 cells 0-3 from the wall divided by delta = (h^2/8) u_n''
-     n   max |u_P - u|   cell 0   cell 1   cell 2   cell 3
-    32       2.855e-03    0.903    0.735    0.599    0.489
-    64       8.132e-04    0.950    0.858    0.774    0.699
-   128       2.196e-04    0.975    0.926    0.880    0.836
-   256       5.745e-05    0.987    0.962    0.938    0.914
+     n   max |u_P - u|   cell 0   cell 1   cell 2   cell 3   corner cells / h^2: (0,0) (n,0) (0,n) (n,n)
+    32       2.855e-03    0.903    0.735    0.599    0.489     0.1749   0.1749   2.9234   2.9234
+    64       8.132e-04    0.950    0.858    0.774    0.699     0.1138   0.1138   3.3309   3.3309
+   128       2.196e-04    0.975    0.926    0.880    0.836     0.0703   0.0703   3.5984   3.5984
+   256       5.745e-05    0.987    0.962    0.938    0.914     0.0420   0.0420   3.7652   3.7652
 
 Viscous operator in the wall cells: (L_h u - lap u)_n = -c u_n''
   operator                         n   c, exact u   c, projected u
@@ -147,16 +158,17 @@ Velocity stays second order.
 walls. At nodes on exactly one non-periodic domain face, `MLNodeLaplacian::compRHS` adds a
 correction that takes the tangential velocity (and the cell-centred source, if any) a quarter
 cell from the wall, extrapolated linearly from the first two rows of cells. With it and
-maxorder 3 or 4, c goes to 0 at O(h) along the walls (output of `inputs`, `wall_corr = 1`):
+maxorder 3 or 4, c goes to 0 at O(h) along the walls (`wall_corr=1`, excerpt; `wall_corr=2`
+gives nearly the same along the walls):
 
 ```
 Projected Burggraf velocity: max error, and the wall-normal error in the
 cells 0-3 from the wall divided by delta = (h^2/8) u_n''
-     n   max |u_P - u|   cell 0   cell 1   cell 2   cell 3
-    32       1.730e-03    0.071   -0.006   -0.068   -0.118
-    64       4.130e-04    0.036   -0.007   -0.045   -0.080
-   128       9.948e-05    0.018   -0.005   -0.026   -0.046
-   256       2.429e-05    0.009   -0.003   -0.014   -0.025
+     n   max |u_P - u|   cell 0   cell 1   cell 2   cell 3   corner cells / h^2: (0,0) (n,0) (0,n) (n,n)
+    32       1.730e-03    0.071   -0.006   -0.068   -0.118     0.0092   0.0092   1.7719   1.7719
+    64       4.130e-04    0.036   -0.007   -0.045   -0.080     0.0009   0.0009   1.6916   1.6916
+   128       9.948e-05    0.018   -0.005   -0.026   -0.046     0.0016   0.0016   1.6300   1.6300
+   256       2.429e-05    0.009   -0.003   -0.014   -0.025     0.0012   0.0012   1.5920   1.5920
 
 Viscous operator in the wall cells: (L_h u - lap u)_n = -c u_n''
   operator                         n   c, exact u   c, projected u
@@ -188,11 +200,24 @@ Viscous operator in the wall cells: (L_h u - lap u)_n = -c u_n''
 
 With `divu_check`, rhs / (h/4) on the bottom-wall nodes is then 0 instead of 1.
 
-**Corners remain a problem.** The correction keeps the original stencil at corner nodes. That
-leaves a large error in the corner cells wherever u_n'' is not zero at the corner. At
-incflo's Burggraf lid corners, the gp error goes from about 0.25 without the fix to only
-0.165, 0.143 and 0.121 with it, at n = 32, 64 and 128. Applying the extrapolation at
-corners as well makes those converge at first order (0.044, 0.023, 0.011). But in a
-manufactured incflo test with div(u) = S != 0, the corner errors then stop converging. No
-corner treatment found so far handles both cases, which is one reason the correction is off
-by default. This test leaves the corners out of its fits.
+**Corners.** With `wall_corr=1`, the correction keeps the original stencil at corner nodes.
+That leaves a large error in the corner cells wherever u_n'' is not zero at the corner, as at
+the lid corners (0,n) and (n,n). `wall_corr=2` also applies the extrapolation at corners, in
+each wall direction, for the velocity and the source in the same way. The projected velocity
+error in the lid corner cells, divided by h^2:
+
+| n | `wall_corr=0` | `wall_corr=1` | `wall_corr=2` |
+|---|---|---|---|
+| 32 | 2.92 | 1.77 | 0.50 |
+| 64 | 3.33 | 1.69 | 0.28 |
+| 128 | 3.60 | 1.63 | 0.15 |
+| 256 | 3.77 | 1.59 | 0.08 |
+
+The solve still converges at the corner nodes (residual at round-off).
+
+In incflo's Burggraf cavity, the gp error at the lid corners is about 0.25 without the fix and
+0.165, 0.143 and 0.121 at n = 32, 64 and 128 with corners left alone. An earlier corner
+extrapolation made those converge at first order (0.044, 0.023, 0.011), but in a
+manufactured incflo test with div(u) = S != 0 the corner errors then stopped converging.
+Whether `wall_corr=2` handles both cases is still to be checked in incflo. This test leaves
+the corners out of its wall fits.
