@@ -107,6 +107,25 @@ public :
     void setRZCorrection (bool rz) noexcept { m_is_rz = rz; }
 
     /**
+     * \brief Second-order nodal divergence at walls (Neumann domain faces).
+     *
+     * By default, the right-hand side built by compRHS is first order at nodes on a wall: it
+     * takes the tangential velocity, and the cell-centered source, of the first layer of cells
+     * as constant over the wall node's half control volume. After the projection, the
+     * wall-normal velocity in the cells next to a no-slip wall is then off by
+     * (h^2/8) d^2u_n/dn^2, which a viscous operator turns into an O(1) error. With this
+     * option, both are instead taken a quarter cell from the wall, extrapolated linearly from
+     * the first two layers of cells.
+     *
+     * The correction is applied at nodes on exactly one non-periodic domain face; nodes on
+     * domain edges and corners keep the original stencil. It is not applied with RZ
+     * coordinates, in boxes that contain cut or covered EB cells, or in the sync residual.
+     *
+     * \param on True turns the correction on. The default is false.
+     */
+    void setWallDivuCorrection (bool on) noexcept { m_wall_divu_corr = on; }
+
+    /**
      * \brief Threshold for normalization (prevents dividing by tiny averages).
      *
      * \param t Minimum average magnitude allowed before rescaling.
@@ -367,6 +386,7 @@ protected:
 private:
 
     int m_is_rz = 0;
+    bool m_wall_divu_corr = false;
 
     Real m_const_sigma = Real(0.0);
     Vector<Vector<Array<std::unique_ptr<MultiFab>,AMREX_SPACEDIM> > > m_sigma;

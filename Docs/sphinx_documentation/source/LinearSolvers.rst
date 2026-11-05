@@ -580,6 +580,33 @@ to 3. With embedded boundaries, AlgMG, PETSc and hypre's IJ interface support
 orders up to 3. MLMG lowers a higher order to what the solver supports, and the
 operator keeps that order afterwards.
 
+Nodal Divergence at Walls
+=========================
+
+In a nodal projection, :cpp:`MLNodeLaplacian::compRHS` computes the divergence of the
+cell-centered velocity (and adds the optional cell-centered source) at the nodes. By
+default, this is first order at nodes on a wall (a Neumann domain face). In a viscous
+flow with no-slip walls, the wall-normal velocity left by the projection in the cells
+next to the wall is then off by :math:`(h^2/8)\, \partial^2 u_n / \partial n^2`. A viscous
+operator divides this by :math:`h^2`, so the wall-normal pressure gradient in those cells
+has an :math:`O(1)` error, and the pressure is only first order at the wall. Calling
+
+.. highlight:: c++
+
+::
+
+    void setWallDivuCorrection (bool on);
+
+with :cpp:`true` on the :cpp:`MLNodeLaplacian` object makes the divergence second order at
+nodes on exactly one wall. Nodes on domain edges and corners keep the original stencil.
+The correction is not applied with RZ coordinates, in boxes that contain cut or covered
+EB cells, or in the sync residual. It is off by default.
+
+With the default :cpp:`maxorder = 2` (see above), the viscous operator itself has an
+:math:`O(1)` truncation error in the cells next to a Dirichlet wall. That error remains
+with the correction, so to get the full benefit, use :cpp:`maxorder = 3` for the viscous
+solve as well. ``Tests/LinearSolvers/NodalProjectionWall`` measures both errors.
+
 
 Curvilinear Coordinates
 =======================
