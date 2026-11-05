@@ -240,7 +240,18 @@ incflo's viscous solve is Neumann at a pressure outflow, so an offset there is n
   them (section 12). Mode 2 is conservative there and its divergence second order along the
   edges. The corners of the box's velocity have u_n'' = 0, so they test little.
 - **The tangential components** (section 12): their viscous error next to a wall stays O(1)
-  with the correction, in 2D and 3D. The correction does not address it.
+  with the correction, in 2D and 3D. The correction does not address it. Two things to check:
+  - *Its source.* Project a velocity whose interior nodal divergence the stencil gets exactly
+    (a quadratic, as in `divu_wall_check`, rhs 0 at interior nodes), with a nonzero
+    tangential second derivative at the wall. If the tangential slip and its O(1) viscous
+    error then go away with mode 2, they come from the interior truncation error of the
+    projection, which only a higher-order projection would reduce; if they stay, from the
+    wall treatment.
+  - *Whether it matters.* The projection pins the normal velocity, so an O(1) normal viscous
+    error has to go into the pressure. The tangential velocity is free, and a time step can
+    balance an O(1) tangential viscous error with an O(h^2) change in it, the size of the
+    slip. So it may not reach gp or the velocity at all. Check the wall-tangential
+    components of gp and of the velocity error in incflo with the correction.
 - **incflo inflow cases** with viscosity and u_n'' != 0 at the inflow have not been run.
 - **EB** is not supported: the correction applies in regular boxes only, and only the build
   has been checked.
@@ -304,7 +315,8 @@ wall-tangential components of the viscous term or of gp) has not been checked.
 
 ## Reproducing
 
-- AMReX: branch `nodal_wall_divu_combined` (not pushed yet), `Tests/LinearSolvers/NodalProjectionWall`:
+- AMReX: branch `nodal_wall_divu_modes` of cgilet/amrex (modes 0, 1, 2),
+  `Tests/LinearSolvers/NodalProjectionWall`:
 
       make -j4 DIM=2 USE_MPI=FALSE
       ./main2d.gnu.ex inputs wall_corr=0     # 1, 2
