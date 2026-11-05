@@ -1190,9 +1190,9 @@ MLNodeLaplacian::compRHS (const Vector<MultiFab*>& rhs, const Vector<MultiFab*>&
         // mlndlap_divu_wall_correction and mlndlap_rhcc_wall_correction).  Not for RZ.  With EB,
         // it is only applied in regular boxes: cut cells use mlndlap_divu_eb and
         // mlndlap_rhcc_eb, which have no such correction.
-        bool wall_correction = m_wall_divu_corr;
+        int wall_mode = m_wall_divu_corr;
 #if (AMREX_SPACEDIM == 2)
-        if (is_rz) { wall_correction = false; }
+        if (is_rz) { wall_mode = 0; }
 #endif
 
         MFItInfo mfi_info;
@@ -1256,9 +1256,9 @@ MLNodeLaplacian::compRHS (const Vector<MultiFab*>& rhs, const Vector<MultiFab*>&
                 {
                     mlndlap_divu(i,j,k,rhsarr,velarr,dmskarr,dxinvarr,
                                  nddom,lobc,hibc,is_rz);
-                    if (wall_correction) {
+                    if (wall_mode > 0) {
                         mlndlap_divu_wall_correction(i,j,k,rhsarr,velarr,dmskarr,dxinvarr,
-                                                     nddom,lobc,hibc);
+                                                     nddom,lobc,hibc,wall_mode);
                     }
                 });
 #else
@@ -1266,9 +1266,9 @@ MLNodeLaplacian::compRHS (const Vector<MultiFab*>& rhs, const Vector<MultiFab*>&
                 {
                     mlndlap_divu(i,j,k,rhsarr,velarr,dmskarr,dxinvarr,
                                  nddom,lobc,hibc);
-                    if (wall_correction) {
+                    if (wall_mode > 0) {
                         mlndlap_divu_wall_correction(i,j,k,rhsarr,velarr,dmskarr,dxinvarr,
-                                                     nddom,lobc,hibc);
+                                                     nddom,lobc,hibc,wall_mode);
                     }
                 });
 #endif
@@ -1303,9 +1303,10 @@ MLNodeLaplacian::compRHS (const Vector<MultiFab*>& rhs, const Vector<MultiFab*>&
                     AMREX_HOST_DEVICE_PARALLEL_FOR_3D(bx, i, j, k,
                     {
                         rhs_cc_a(i,j,k) = mlndlap_rhcc(i, j, k, rhccarr, dmskarr);
-                        if (wall_correction) {
+                        if (wall_mode > 0) {
                             rhs_cc_a(i,j,k) += mlndlap_rhcc_wall_correction(i, j, k, rhccarr, dmskarr,
-                                                                            nddom, lobc, hibc);
+                                                                            nddom, lobc, hibc,
+                                                                            wall_mode);
                         }
                     });
                 }

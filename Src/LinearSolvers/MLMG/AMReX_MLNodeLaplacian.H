@@ -117,13 +117,14 @@ public :
      * option, both are instead taken a quarter cell from the wall, extrapolated linearly from
      * the first two layers of cells.
      *
-     * The correction is applied at nodes on exactly one non-periodic domain face; nodes on
-     * domain edges and corners keep the original stencil. It is not applied with RZ
-     * coordinates, in boxes that contain cut or covered EB cells, or in the sync residual.
+     * It is not applied at nodes on an inflow face, with RZ coordinates, in boxes that
+     * contain cut or covered EB cells, or in the sync residual.
      *
-     * \param on True turns the correction on. The default is false.
+     * \param mode 0 (the default): off. 1: nodes on exactly one wall; nodes on domain edges
+     *             and corners keep the original stencil. 2: all wall nodes, including edges
+     *             and corners, where the extrapolation is done in each wall direction.
      */
-    void setWallDivuCorrection (bool on) noexcept { m_wall_divu_corr = on; }
+    void setWallDivuCorrection (int mode) noexcept { m_wall_divu_corr = mode; }
 
     /**
      * \brief Threshold for normalization (prevents dividing by tiny averages).
@@ -386,7 +387,7 @@ protected:
 private:
 
     int m_is_rz = 0;
-    bool m_wall_divu_corr = false;
+    int m_wall_divu_corr = 0;
 
     Real m_const_sigma = Real(0.0);
     Vector<Vector<Array<std::unique_ptr<MultiFab>,AMREX_SPACEDIM> > > m_sigma;

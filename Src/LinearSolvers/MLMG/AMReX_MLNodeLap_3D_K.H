@@ -1346,45 +1346,68 @@ void mlndlap_divu (int i, int j, int k, Array4<Real> const& rhs, Array4<Real con
     }
 }
 
-// Correction to mlndlap_divu at a node on a wall (Neumann boundary) that is on no other
-// non-periodic domain face.  There, mlndlap_divu takes the tangential velocity of the first
-// layer of cells as constant over the half control volume, which makes the divergence first
-// order.  The projected normal velocity near the wall is then too large by
-// (h^2/8) d^2u_n/dn^2, which a viscous operator turns into an O(1) error in the wall-normal
-// pressure gradient.  The correction uses instead the value a quarter cell from the wall,
-// extrapolated linearly from the first two layers: (5/4) layer 1 - (1/4) layer 2.  Domain edges
-// and corners are left alone: there, the extrapolation slows the convergence of the pressure
-// gradient when the velocity is not divergence-free, and the original stencil is only off on
-// lines of nodes.
+// Correction to mlndlap_divu at wall nodes (Neumann boundaries; see
+// MLNodeLaplacian::setWallDivuCorrection).  The control volume of a wall node is half a cell
+// thick in each wall direction.  mlndlap_divu takes each velocity term at the first layer of
+// cells, h/2 from the walls, as constant over it, which makes the divergence first order.  The
+// projected normal velocity near a wall is then too large by (h^2/8) d^2u_n/dn^2, which a
+// viscous operator turns into an O(1) error in the wall-normal pressure gradient.  The
+// correction takes each term of velocity component d instead a quarter cell from each wall t
+// != d, extrapolated linearly from the first two layers: (5/4) layer 1 - (1/4) layer 2.  The
+// terms are the tangential derivative across the node, or, if d is also a wall direction (at
+// an edge or a corner), the flux through the wall and the face h/2 from it.  Each is averaged
+// over the two cells on either side of the node in the third direction, or taken in the first
+// cell if that is a wall direction too.  With mode 1, edges and corners are left alone.  The
+// correction is computed after the Neumann scaling of mlndlap_impose_neumann_bc and divided by
+// its factor 2^nwall here, before it.
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
 void mlndlap_divu_wall_correction (int i, int j, int k, Array4<Real> const& rhs,
                                    Array4<Real const> const& vel, Array4<int const> const& msk,
                                    GpuArray<Real,AMREX_SPACEDIM> const& dxinv,
                                    Box const& nodal_domain,
                                    GpuArray<LinOpBCType, AMREX_SPACEDIM> const& bclo,
-                                   GpuArray<LinOpBCType, AMREX_SPACEDIM> const& bchi) noexcept
+                                   GpuArray<LinOpBCType, AMREX_SPACEDIM> const& bchi,
+                                   int mode) noexcept
 {
     if (msk(i,j,k)) { return; }
     IntVect const node(i,j,k);
-    int side = 0;
-    int const wdir = mlndlap_single_wall_dir(node, nodal_domain, bclo, bchi, side);
-    if (wdir < 0) { return; }
+    GpuArray<int,AMREX_SPACEDIM> wall;
+    int const nwall = mlndlap_wall_correction_faces(node, nodal_domain, bclo, bchi, mode, wall);
+    if (nwall == 0) { return; }
     Real r = Real(0.0);
     for (int t = 0; t < 3; ++t) {
-        if (t == wdir) { continue; }  // t: a tangential direction and velocity component
-        int const o = 3 - wdir - t;   // the other tangential direction
-        IntVect const et = IntVect::TheDimensionVector(t);
-        for (int m = node[o]-1; m <= node[o]; ++m) {
-            // the first and the second layer of cells from the wall
-            IntVect c1 = node;
-            c1[wdir] = (side > 0) ? node[wdir] : node[wdir]-1;
-            c1[o] = m;
-            IntVect c2 = c1;
-            c2[wdir] += side;
-            r += Real(0.0625)*dxinv[t]*(vel(c1,t) - vel(c1-et,t) - vel(c2,t) + vel(c2-et,t));
+        if (wall[t] == 0) { continue; }      // t: the wall direction of the extrapolation
+        for (int d = 0; d < 3; ++d) {
+            if (d == t) { continue; }         // d: the velocity component
+            int const o = 3 - t - d;          // the third direction
+            IntVect const ed = IntVect::TheDimensionVector(d);
+            // in direction o: the first cell from wall o, or the cells on both sides of the node
+            int const olo = (wall[o] > 0) ? node[o] : node[o]-1;
+            int const ohi = (wall[o] == 0) ? node[o] : olo;
+            Real s = Real(0.0);
+            for (int m = olo; m <= ohi; ++m) {
+                // the first and the second layer of cells from wall t
+                IntVect c1 = node;
+                c1[t] = (wall[t] > 0) ? node[t] : node[t]-1;
+                c1[o] = m;
+                IntVect c2 = c1;
+                c2[t] += wall[t];
+                if (wall[d] == 0) {
+                    // the tangential derivative across the node
+                    s += dxinv[d]*(vel(c1,d) - vel(c1-ed,d) - vel(c2,d) + vel(c2-ed,d));
+                } else {
+                    // the flux through wall d: the first cell from it minus the ghost cell
+                    c1[d] = (wall[d] > 0) ? node[d] : node[d]-1;
+                    c2[d] = c1[d];
+                    IntVect const eg = ed*wall[d];
+                    s += Real(2*wall[d])*dxinv[d]
+                        *(vel(c1,d) - vel(c1-eg,d) - vel(c2,d) + vel(c2-eg,d));
+                }
+            }
+            r += Real(0.25)*s/Real(ohi-olo+1);
         }
     }
-    rhs(i,j,k) += r;
+    rhs(i,j,k) += r/Real(1 << nwall);
 }
 
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
@@ -1401,36 +1424,47 @@ Real mlndlap_rhcc (int i, int j, int k, Array4<Real const> const& rhcc,
     return r;
 }
 
-// Correction to mlndlap_rhcc at the nodes of mlndlap_divu_wall_correction, for rhcc that is zero
-// outside the domain.  There, mlndlap_rhcc takes rhcc in the first layer of cells over the half
-// control volume.  The correction uses instead the value a quarter cell from the wall,
-// extrapolated linearly from the first two layers.
+// Correction to mlndlap_rhcc at the nodes of mlndlap_divu_wall_correction, in the same way:
+// rhcc is taken a quarter cell from each wall, extrapolated linearly from the first two layers
+// of cells.  mlndlap_rhcc sums rhcc over the cells around the node, so rhcc must be zero outside
+// the domain, as compRHS makes it.
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
 Real mlndlap_rhcc_wall_correction (int i, int j, int k, Array4<Real const> const& rhcc,
                                    Array4<int const> const& msk, Box const& nodal_domain,
                                    GpuArray<LinOpBCType, AMREX_SPACEDIM> const& bclo,
-                                   GpuArray<LinOpBCType, AMREX_SPACEDIM> const& bchi) noexcept
+                                   GpuArray<LinOpBCType, AMREX_SPACEDIM> const& bchi,
+                                   int mode) noexcept
 {
     if (msk(i,j,k)) { return Real(0.0); }
     IntVect const node(i,j,k);
-    int side = 0;
-    int const wdir = mlndlap_single_wall_dir(node, nodal_domain, bclo, bchi, side);
-    if (wdir < 0) { return Real(0.0); }
-    int const a = (wdir+1)%3;
-    int const b = (wdir+2)%3;
+    GpuArray<int,AMREX_SPACEDIM> wall;
+    int const nwall = mlndlap_wall_correction_faces(node, nodal_domain, bclo, bchi, mode, wall);
+    if (nwall == 0) { return Real(0.0); }
     Real r = Real(0.0);
-    for (int ma = node[a]-1; ma <= node[a]; ++ma) {
-        for (int mb = node[b]-1; mb <= node[b]; ++mb) {
-            IntVect c1 = node;
-            c1[wdir] = (side > 0) ? node[wdir] : node[wdir]-1;
-            c1[a] = ma;
-            c1[b] = mb;
-            IntVect c2 = c1;
-            c2[wdir] += side;
-            r += rhcc(c1) - rhcc(c2);
+    for (int t = 0; t < 3; ++t) {
+        if (wall[t] == 0) { continue; }
+        int const a = (t+1)%3;
+        int const b = (t+2)%3;
+        // in directions a and b: the first cell from a wall, or the cells on both sides
+        int const alo = (wall[a] > 0) ? node[a] : node[a]-1;
+        int const ahi = (wall[a] == 0) ? node[a] : alo;
+        int const blo = (wall[b] > 0) ? node[b] : node[b]-1;
+        int const bhi = (wall[b] == 0) ? node[b] : blo;
+        Real s = Real(0.0);
+        for (int ma = alo; ma <= ahi; ++ma) {
+            for (int mb = blo; mb <= bhi; ++mb) {
+                IntVect c1 = node;
+                c1[t] = (wall[t] > 0) ? node[t] : node[t]-1;
+                c1[a] = ma;
+                c1[b] = mb;
+                IntVect c2 = c1;
+                c2[t] += wall[t];
+                s += rhcc(c1) - rhcc(c2);
+            }
         }
+        r += Real(0.25)*s/Real((ahi-alo+1)*(bhi-blo+1));
     }
-    return Real(0.03125)*r;
+    return r/Real(1 << nwall);
 }
 
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE

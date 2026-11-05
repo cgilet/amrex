@@ -68,25 +68,32 @@ mlndlap_unimpose_neumann_bc (Box const& bx, Array4<Real> const& rhs, Box const& 
     mlndlap_scale_neumann_bc(0.5, bx, rhs, nddom, lobc, hibc);
 }
 
-// If the node is on exactly one non-periodic face of the domain and that face is a Neumann
-// boundary (a wall), return the direction normal to it and set side to +1 for a low face and -1
-// for a high face.  Otherwise return -1.
+// The walls (Neumann domain faces) at a node that the wall correction of setWallDivuCorrection
+// applies to: wall[idim] = +1 for a low face, -1 for a high face, 0 for none.  Returns the
+// number of walls, or 0 if the correction does not apply: the node is on no wall, it is on a
+// non-periodic face that is not a wall (e.g., inflow), or it is on two or more walls (domain
+// edges and corners) and mode is 1.
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-int mlndlap_single_wall_dir (IntVect const& node, Box const& nddom,
-                             GpuArray<LinOpBCType,AMREX_SPACEDIM> const& lobc,
-                             GpuArray<LinOpBCType,AMREX_SPACEDIM> const& hibc,
-                             int& side) noexcept
+int mlndlap_wall_correction_faces (IntVect const& node, Box const& nddom,
+                                   GpuArray<LinOpBCType,AMREX_SPACEDIM> const& lobc,
+                                   GpuArray<LinOpBCType,AMREX_SPACEDIM> const& hibc,
+                                   int mode, GpuArray<int,AMREX_SPACEDIM>& wall) noexcept
 {
-    int nbnd = 0;
-    int dir = -1;
+    int nwall = 0;
     for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-        bool const lo = node[idim] == nddom.smallEnd(idim) && lobc[idim] != LinOpBCType::Periodic;
-        bool const hi = node[idim] == nddom.bigEnd(idim)   && hibc[idim] != LinOpBCType::Periodic;
-        if (lo || hi) { ++nbnd; }
-        if (lo && lobc[idim] == LinOpBCType::Neumann) { dir = idim; side =  1; }
-        if (hi && hibc[idim] == LinOpBCType::Neumann) { dir = idim; side = -1; }
+        wall[idim] = 0;
+        if (node[idim] == nddom.smallEnd(idim) && lobc[idim] != LinOpBCType::Periodic) {
+            if (lobc[idim] != LinOpBCType::Neumann) { return 0; }
+            wall[idim] = 1;
+            ++nwall;
+        }
+        if (node[idim] == nddom.bigEnd(idim) && hibc[idim] != LinOpBCType::Periodic) {
+            if (hibc[idim] != LinOpBCType::Neumann) { return 0; }
+            wall[idim] = -1;
+            ++nwall;
+        }
     }
-    return (nbnd == 1) ? dir : -1;
+    return (nwall == 1 || (nwall > 1 && mode >= 2)) ? nwall : 0;
 }
 
 }

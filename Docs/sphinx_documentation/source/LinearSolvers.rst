@@ -595,12 +595,19 @@ has an :math:`O(1)` error, and the pressure is only first order at the wall. Cal
 
 ::
 
-    void setWallDivuCorrection (bool on);
+    void setWallDivuCorrection (int mode);
 
-with :cpp:`true` on the :cpp:`MLNodeLaplacian` object makes the divergence second order at
-nodes on exactly one wall. Nodes on domain edges and corners keep the original stencil.
-The correction is not applied with RZ coordinates, in boxes that contain cut or covered
-EB cells, or in the sync residual. It is off by default.
+on the :cpp:`MLNodeLaplacian` object takes the velocity and the source a quarter cell from
+the wall instead, extrapolated linearly from the first two layers of cells:
+
+- ``mode = 0`` (the default): no correction.
+- ``mode = 1``: the correction at nodes on exactly one wall. Nodes on domain edges and
+  corners keep the original stencil.
+- ``mode = 2``: the correction at all wall nodes. At edges and corners, it is applied in each
+  wall direction.
+
+The correction is not applied at nodes on an inflow face, with RZ coordinates, in boxes
+that contain cut or covered EB cells, or in the sync residual.
 
 With the default :cpp:`maxorder = 2` (see above), the viscous operator itself has an
 :math:`O(1)` truncation error in the cells next to a Dirichlet wall. That error remains
