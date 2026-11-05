@@ -16,7 +16,9 @@
 // u_n'' is the second normal derivative of the normal velocity at the wall.
 //
 // With channel = 1 it also projects a channel flow with an inflow face and a pressure outflow
-// (channel_run), to see the projection where a wall meets them.
+// (channel_run), to see the projection where a wall meets them, and a uniform inflow against
+// the walls (uniform_inflow_run).  With divu_check = 1 it checks compRHS without a solve,
+// including its discrete conservation (conservation_check).
 
 #include <AMReX.H>
 #include <AMReX_MLABecLaplacian.H>
@@ -57,6 +59,17 @@ AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE Real chF  (Real x) { return x + Real(0.
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE Real chF1 (Real x) { return Real(1) + x; }
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE Real chu (Real x, Real y) { return Real(6)*y*(Real(1)-y) + chF(x)*chG1(y); }
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE Real chv (Real x, Real y) { return -chF1(x)*chG(y); }
+
+// A pseudo-random number in [-1, 1] for cell (i,j,k) and component c, the same on every run
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE Real hash_unit (int i, int j, int k, int c)
+{
+    unsigned s = (unsigned(i)*73856093u) ^ (unsigned(j)*19349663u) ^ (unsigned(k)*83492791u)
+                 ^ (unsigned(c)*2654435761u);
+    s ^= s >> 13;
+    s *= 0x5bd1e995u;
+    s ^= s >> 15;
+    return Real(s & 0xffffffu) / Real(0xffffff) * Real(2) - Real(1);
+}
 
 // The viscous operators tested: MLABecLaplacian then MLTensorOp, each at every maxorder in
 // the `maxorders` input (default 2 3).  Operator op uses maxorders[op % nmo], with the
@@ -750,6 +763,193 @@ ChannelResult channel_run (int n, int max_grid_size, Real rtol, int verbose)
     return r;
 }
 
+// Discrete conservation of compRHS, with no solve.  The cell velocity is random, so it changes by
+// O(1) from cell to cell, as it does next to a corner where the boundary data do not match.
+// Walls at y = 0 and 1, and at x = 0 and 1 either walls too (closed = 1) or inflow faces with
+// u = 1 and 0.7 in the ghost cells.  The sum of rhs over the nodes' control volumes equals the
+// flux through the domain boundary, 0 or 0.7 - 1 per unit height, for any velocity, if the
+// fluxes through the faces of the control volumes telescope.  The original stencil does that;
+// returns the difference.
+Real conservation_check (int n, int max_grid_size, int closed)
+{
+    Real const h = Real(1)/Real(n);
+#if (AMREX_SPACEDIM == 3)
+    int const nz = 8;
+    Real const lz = Real(nz)*h;
+#else
+    Real const lz = Real(1);
+#endif
+    Box const domain(IntVect(0), IntVect(AMREX_D_DECL(n-1, n-1, nz-1)));
+    RealBox const rb({AMREX_D_DECL(Real(0), Real(0), Real(0))},
+                     {AMREX_D_DECL(Real(1), Real(1), lz)});
+    Array<int,AMREX_SPACEDIM> const is_periodic{AMREX_D_DECL(0, 0, 1)};
+    Geometry const geom(domain, rb, CoordSys::cartesian, is_periodic);
+    BoxArray ba(domain);
+    ba.maxSize(max_grid_size);
+    DistributionMapping const dm(ba);
+
+    Real const ulo = (closed != 0) ? Real(0) : Real(1);
+    Real const uhi = (closed != 0) ? Real(0) : Real(0.7);
+    MultiFab vel(ba, dm, AMREX_SPACEDIM, 1);
+    vel.setVal(0.0);
+    for (MFIter mfi(vel); mfi.isValid(); ++mfi) {
+        Box const& vbx = mfi.validbox();
+        auto const& v = vel.array(mfi);
+        ParallelFor(vbx, AMREX_SPACEDIM, [=] AMREX_GPU_DEVICE (int i, int j, int k, int c) noexcept
+        {
+            v(i,j,k,c) = hash_unit(i,j,k,c);
+        });
+        if (closed != 0) { continue; }
+        // The inflow ghost cells, including those at the box corners: u on the face, and a
+        // random tangential velocity, which compRHS must not see
+        for (int side = 0; side < 2; ++side) {
+            if ((side == 0 && vbx.smallEnd(0) != 0) || (side == 1 && vbx.bigEnd(0) != n-1)) {
+                continue;
+            }
+            Box const gbx = amrex::grow((side == 0) ? amrex::adjCellLo(vbx, 0)
+                                                    : amrex::adjCellHi(vbx, 0),
+                                        IntVect(AMREX_D_DECL(0,1,1)));
+            Real const un = (side == 0) ? ulo : uhi;
+            ParallelFor(gbx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+            {
+                if (j < 0 || j >= n) { return; }
+                v(i,j,k,0) = un;
+                for (int c = 1; c < AMREX_SPACEDIM; ++c) { v(i,j,k,c) = hash_unit(i,j,k,c); }
+            });
+        }
+    }
+    vel.FillBoundary(geom.periodicity());
+
+    LinOpBCType const xbc = (closed != 0) ? LinOpBCType::Neumann : LinOpBCType::inflow;
+    Array<LinOpBCType,AMREX_SPACEDIM> const bc{AMREX_D_DECL(xbc, LinOpBCType::Neumann,
+                                                            LinOpBCType::Periodic)};
+    MLNodeLaplacian linop({geom}, {ba}, {dm});
+    linop.setDomainBC(bc, bc);
+    MultiFab sigma(ba, dm, 1, 0);
+    sigma.setVal(1.0);
+    linop.setSigma(0, sigma);
+    linop.setWallDivuCorrection(wall_corr);
+    BoxArray const nba = amrex::convert(ba, IntVect::TheNodeVector());
+    MultiFab rhs(nba, dm, 1, 0);
+    linop.compRHS({&rhs}, {&vel}, {}, {});
+
+    DistributionMapping const dm1(Vector<int>{ParallelDescriptor::IOProcessorNumber()});
+    MultiFab rhs1(BoxArray(amrex::surroundingNodes(domain)), dm1, 1, 0,
+                  MFInfo().SetArena(The_Pinned_Arena()));
+    rhs1.ParallelCopy(rhs, 0, 0, 1);
+    Gpu::streamSynchronize();
+    Real sum = 0;
+    for (MFIter mfi(rhs1); mfi.isValid(); ++mfi) {
+        auto const& a = rhs1.const_array(mfi);
+        Box bx = mfi.validbox();
+#if (AMREX_SPACEDIM == 3)
+        bx.setBig(2, nz-1);   // z is periodic: node nz is node 0
+#endif
+        amrex::LoopOnCpu(bx, [&] (int i, int j, int k)
+        {
+            Real vol = AMREX_D_TERM(h, *h, *h);
+            if (i == 0 || i == n) { vol *= Real(0.5); }
+            if (j == 0 || j == n) { vol *= Real(0.5); }
+            sum += a(i,j,k) * vol;
+        });
+    }
+    ParallelDescriptor::ReduceRealSum(sum);
+    return sum - (uhi - ulo) * lz;
+}
+
+// A uniform inflow against no-slip walls: the channel of channel_run, with u = 1 in the inflow
+// ghost cells up to the walls, where u = 0.  The data do not match at the wall/inflow corners,
+// and the velocity is singular there.  The velocity projected is
+//   u = (2/pi)^2 atan2(y, x) atan2(1-y, x),  v = 0,
+// which is 1 on the inflow face, 0 on the walls, and changes by O(1) from cell to cell next to
+// the corners at every resolution.  The projected velocity carries the inflow flux, 1, through
+// every cross-section of the channel.  Returns the flux h sum_j u(i,j) minus 1 at
+// i = n/4, n/2, 3n/4: a node that is not conservative adds its error to it downstream.
+std::array<Real,3> uniform_inflow_run (int n, int max_grid_size, Real rtol, int verbose)
+{
+    Real const h = Real(1)/Real(n);
+#if (AMREX_SPACEDIM == 3)
+    int const nz = 8;
+#endif
+    Box const domain(IntVect(0), IntVect(AMREX_D_DECL(n-1, n-1, nz-1)));
+    RealBox const rb({AMREX_D_DECL(Real(0), Real(0), Real(0))},
+                     {AMREX_D_DECL(Real(1), Real(1), Real(nz)*h)});
+    Array<int,AMREX_SPACEDIM> const is_periodic{AMREX_D_DECL(0, 0, 1)};
+    Geometry const geom(domain, rb, CoordSys::cartesian, is_periodic);
+    BoxArray ba(domain);
+    ba.maxSize(max_grid_size);
+    DistributionMapping const dm(ba);
+
+    constexpr Real two_over_pi = Real(2.0)/Real(3.1415926535897932);
+    MultiFab vel(ba, dm, AMREX_SPACEDIM, 1);
+    vel.setVal(0.0);
+    for (MFIter mfi(vel); mfi.isValid(); ++mfi) {
+        Box const& vbx = mfi.validbox();
+        auto const& v = vel.array(mfi);
+        ParallelFor(vbx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+        {
+            Real const x = (Real(i)+Real(0.5))*h;
+            Real const y = (Real(j)+Real(0.5))*h;
+            v(i,j,k,0) = two_over_pi*two_over_pi * std::atan2(y, x) * std::atan2(Real(1)-y, x);
+        });
+        if (vbx.smallEnd(0) == 0) {
+            ParallelFor(amrex::grow(amrex::adjCellLo(vbx, 0), IntVect(AMREX_D_DECL(0,1,1))),
+            [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+            {
+                if (j >= 0 && j < n) { v(i,j,k,0) = Real(1); }
+            });
+        }
+        if (vbx.bigEnd(0) == n-1) {
+            ParallelFor(amrex::grow(amrex::adjCellHi(vbx, 0), IntVect(AMREX_D_DECL(0,1,1))),
+            [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+            {
+                if (j >= 0 && j < n) { v(i,j,k,0) = v(n-1,j,k,0); }
+            });
+        }
+    }
+    vel.FillBoundary(geom.periodicity());
+
+    Array<LinOpBCType,AMREX_SPACEDIM> const lobc{AMREX_D_DECL(LinOpBCType::inflow,
+                                                              LinOpBCType::Neumann,
+                                                              LinOpBCType::Periodic)};
+    Array<LinOpBCType,AMREX_SPACEDIM> const hibc{AMREX_D_DECL(LinOpBCType::Dirichlet,
+                                                              LinOpBCType::Neumann,
+                                                              LinOpBCType::Periodic)};
+    MLNodeLaplacian linop({geom}, {ba}, {dm});
+    linop.setDomainBC(lobc, hibc);
+    MultiFab sigma(ba, dm, 1, 0);
+    sigma.setVal(1.0);
+    linop.setSigma(0, sigma);
+    linop.setWallDivuCorrection(wall_corr);
+    BoxArray const nba = amrex::convert(ba, IntVect::TheNodeVector());
+    MultiFab rhs(nba, dm, 1, 0);
+    MultiFab phi(nba, dm, 1, 1);
+    phi.setVal(0.0);
+    linop.compRHS({&rhs}, {&vel}, {}, {});
+    MLMG mlmg(linop);
+    mlmg.setVerbose(verbose);
+    mlmg.solve({&phi}, {&rhs}, rtol, Real(0));
+    MultiFab flux(ba, dm, AMREX_SPACEDIM, 0);
+    mlmg.getFluxes({&flux});
+    MultiFab::Add(vel, flux, 0, 0, AMREX_SPACEDIM, 0);
+
+    DistributionMapping const dm1(Vector<int>{ParallelDescriptor::IOProcessorNumber()});
+    MultiFab all(BoxArray(domain), dm1, 1, 0, MFInfo().SetArena(The_Pinned_Arena()));
+    all.ParallelCopy(vel, 0, 0, 1);
+    Gpu::streamSynchronize();
+    std::array<Real,3> q{};
+    for (MFIter mfi(all); mfi.isValid(); ++mfi) {
+        auto const& a = all.const_array(mfi);
+        int m = 0;
+        for (int i : {n/4, n/2, 3*n/4}) {
+            Real s = 0;
+            for (int j = 0; j < n; ++j) { s += a(i,j,0); }
+            q[m++] = s*h - Real(1);
+        }
+    }
+    return q;
+}
+
 int main (int argc, char* argv[])
 {
     amrex::Initialize(argc, argv);
@@ -786,6 +986,17 @@ int main (int argc, char* argv[])
                            << "     n       interior           wall         corner\n";
             for (int n : n_cell) {
                 source_wall_check(n, max_grid_size);
+            }
+            amrex::Print() << "\nConservation, random cell velocity: sum of rhs over the control volumes\n"
+                           << "minus the flux through the boundary (0 to round-off if the face fluxes\n"
+                           << "telescope); closed box, and walls with inflow faces at both x ends\n"
+                           << "     n     closed box    with inflow faces\n";
+            for (int n : n_cell) {
+                char cl[128];
+                std::snprintf(cl, sizeof(cl), "  %4d   %12.3e   %12.3e\n", n,
+                              double(conservation_check(n, max_grid_size, 1)),
+                              double(conservation_check(n, max_grid_size, 0)));
+                amrex::Print() << cl;
             }
             amrex::Print() << "\nBurggraf (div u = 0): rhs / h^2 on the 3x3 nodes at the (0,0) corner\n";
             for (int n : n_cell) {
@@ -855,6 +1066,16 @@ int main (int argc, char* argv[])
                               n_cell[s], double(c.e_max), double(c.e_wall), double(c.e_wall_in[0]),
                               double(c.e_wall_in[1]), double(c.e_wall_in[2]), double(c.e_wall_out[0]),
                               double(c.e_wall_out[1]), double(c.e_inflow));
+                amrex::Print() << line;
+            }
+            amrex::Print() << "\nUniform inflow (u = 1 in the inflow ghost cells up to the no-slip walls):\n"
+                           << "flux of the projected velocity through x = 1/4, 1/2, 3/4, minus the inflow\n"
+                           << "flux 1\n"
+                           << "     n        x = 1/4        x = 1/2        x = 3/4\n";
+            for (int n : n_cell) {
+                auto const q = uniform_inflow_run(n, max_grid_size, rtol, verbose);
+                std::snprintf(line, sizeof(line), "  %4d   %12.3e   %12.3e   %12.3e\n", n,
+                              double(q[0]), double(q[1]), double(q[2]));
                 amrex::Print() << line;
             }
             amrex::Print() << '\n';

@@ -35,12 +35,18 @@ With `divu_check = 1`, it first checks the nodal divergence stencil directly, wi
 it calls `compRHS` for u = (x y, -y^2/2), which is divergence-free with u_n'' = -1 on the bottom
 wall. It prints the largest |rhs| at interior nodes, which is 0 because the stencil is exact
 for quadratics there, and rhs / (h/4) on the bottom-wall nodes. That is 1 without the wall
-correction and 0 with it. Two more checks without a solve follow:
+correction and 0 with it. Three more checks without a solve follow:
 
 - **A cell-centred source:** u = (x (y+y^2), y (x+x^2)) with S = div u, so compRHS with the
   source should give 0. It prints max |rhs| / h^2 at interior nodes, on the walls and at the
   (0,0) corner: O(1) would be second order, O(1/h) first. It is 0 in every mode, so the
   velocity and the source are treated consistently.
+- **Conservation:** with a random cell velocity, which changes by O(1) from cell to cell as it
+  does next to a corner where the boundary data do not match, the sum of rhs over the nodes'
+  control volumes minus the flux through the domain boundary. It is zero to round-off for any
+  velocity if the fluxes through the faces of the control volumes telescope, as they do with
+  the original stencil. It is checked in a closed box, and with walls at y = 0 and 1 and
+  inflow faces at both x ends.
 - **The Burggraf rhs near the corners:** rhs / h^2 on the 3x3 nodes at the (0,0) and the
   (0,n) lid corner.
 
@@ -53,9 +59,12 @@ mpiexec -n 2 ./main2d.gnu.MPI.ex inputs
 
 `n_cell`, `max_grid_size`, `rtol`, `verbose`, `maxorders`, `wall_corr`, `divu_check` and
 `channel` can be set in `inputs` or on the command line. `inputs` uses `wall_corr = 2`; add `wall_corr=0` on
-the command line to see the error. It takes a few seconds. Apart from the solve's residual,
-which is at round-off, the output does not depend on `max_grid_size` (checked with 16, 32 and
-1024), and 3D (8 cells in z) prints the same numbers as 2D.
+the command line to see the error. It takes a few seconds. Apart from the numbers that are
+zero to round-off or to the solver tolerance (the solve's residual, and the conservation and
+uniform-inflow flux errors where they are zero), the output does not depend on
+`max_grid_size` (checked with 16, 32 and 1024), and 3D (8 cells in z) prints the same numbers
+as 2D. The exception is the conservation check with `wall_corr=1`, whose random velocity
+depends on z.
 
 ## Output without the wall correction (`wall_corr=0`, excerpt)
 
@@ -215,6 +224,23 @@ error in the lid corner cells, divided by h^2:
 
 The solve still converges at the corner nodes (residual at round-off).
 
+Only `wall_corr=2` keeps the divergence conservative. A node next to a corner shares half-cell
+faces with the corner node, and with `wall_corr=1` only the first one corrects the flux
+through them. The conservation check shows it, with a random velocity:
+
+```
+     n     closed box    with inflow faces
+    32      1.386e-02      1.386e-02
+    64     -2.502e-03     -2.502e-03
+   128      5.211e-04      5.211e-04
+   256      5.673e-04      5.673e-04
+```
+
+with `wall_corr=1`, against 1e-16 with `wall_corr=0` and `wall_corr=2`. For a smooth velocity
+this is an O(h^2) error at each corner, which the Burggraf results above do not show. Where
+the velocity changes by O(1) from cell to cell next to a corner, it is an O(h) mass source
+(see the uniform inflow below).
+
 In incflo's Burggraf cavity, the gp error at the lid corners is about 0.25 without the fix and
 0.165, 0.143 and 0.121 at n = 32, 64 and 128 with corners left alone. An earlier corner
 extrapolation made those converge at first order (0.044, 0.023, 0.011), but in a
@@ -254,39 +280,95 @@ not become an O(1) force. Without the wall correction (`wall_corr=0`):
    256       1.791e-05    0.991    1.001    0.998    0.997    0.813    0.386    0.986
 ```
 
-With `wall_corr=1` (`wall_corr=2` prints the same: the only nodes on two faces are on the
-outflow, where phi is set, or on the inflow, which the correction leaves alone):
+`mlndlap_divu` treats an inflow face like a wall: the control volumes of its nodes are cut in
+half in the same way, and the ghost cells hold the normal velocity on the face. The wall
+correction does the same, with the flux through the face taken as the first cell minus the
+ghost cell. With `wall_corr=1`:
 
 ```
      n   interior       wall   wall i=1   corner i=0   inflow face   wall i=n-1
-    32     0.0577     0.1119     0.0616       0.4690        0.0672       0.1175
-    64     0.0300     0.0573     0.0310       0.4844        0.0574       0.0606
-   128     0.0153     0.0290     0.0156       0.4922        0.0527       0.0308
-   256     0.0077     0.0146     0.0078       0.4961        0.0504       0.0155
+    32     0.0577     0.1119     0.0616       0.4690        0.0236       0.1175
+    64     0.0300     0.0573     0.0310       0.4844        0.0118       0.0606
+   128     0.0153     0.0290     0.0156       0.4922        0.0059       0.0308
+   256     0.0077     0.0146     0.0078       0.4961        0.0029       0.0155
 
      n   max |u_P - u|    walls    i=0      i=1      i=2    i=n-2    i=n-1   inflow
-    32       3.065e-04    0.132    0.444    0.152    0.136    0.135    0.065    0.850
-    64       9.198e-05    0.069    0.418    0.098    0.082    0.071    0.034    0.928
-   128       2.535e-05    0.035    0.404    0.070    0.054    0.037    0.018    0.965
-   256       6.680e-06    0.018    0.396    0.056    0.039    0.019    0.009    0.983
+    32       3.048e-04    0.133    0.428    0.148    0.135    0.135    0.065   -0.074
+    64       9.152e-05    0.069    0.407    0.094    0.079    0.071    0.034   -0.033
+   128       2.524e-05    0.035    0.397    0.067    0.051    0.037    0.018   -0.015
+   256       6.652e-06    0.018    0.392    0.053    0.037    0.019    0.009   -0.007
 ```
 
-- **Outflow:** the correction works up to the outflow. The wall nodes next to it become second
-  order, and the wall cells next to it go to 0 at O(h) like the rest of the wall.
-- **Inflow face:** the correction leaves its nodes alone, so the divergence there stays first
-  order, and the normal velocity next to the inflow face is off by delta, as at a wall without
-  the correction. incflo's viscous solve is Dirichlet at a mass inflow, as at a wall, so with
-  viscosity and u_n'' != 0 at an inflow this should give the same O(1) error in the normal
+and with `wall_corr=2`:
+
+```
+     n   interior       wall   wall i=1   corner i=0   inflow face   wall i=n-1
+    32     0.0577     0.1119     0.0616       0.0602        0.0236       0.1175
+    64     0.0300     0.0573     0.0310       0.0307        0.0118       0.0606
+   128     0.0153     0.0290     0.0156       0.0155        0.0059       0.0308
+   256     0.0077     0.0146     0.0078       0.0078        0.0029       0.0155
+
+     n   max |u_P - u|    walls    i=0      i=1      i=2    i=n-2    i=n-1   inflow
+    32       3.058e-04    0.132    0.117    0.117    0.117    0.135    0.065   -0.048
+    64       9.167e-05    0.069    0.059    0.059    0.059    0.071    0.034   -0.025
+   128       2.525e-05    0.035    0.029    0.029    0.029    0.037    0.018   -0.013
+   256       6.654e-06    0.018    0.015    0.015    0.015    0.019    0.009   -0.007
+```
+
+- **Outflow:** a pressure outflow is Dirichlet for phi, so its nodes are not solved for and
+  not corrected. The wall nodes next to it are, and the wall cells next to the outflow go to 0
+  at O(h) like the rest of the wall.
+- **Inflow face:** second order in both modes, and the normal velocity next to it converges
+  to the exact one at O(h) relative to delta. Without the correction it is off by delta, as at
+  a wall. incflo's viscous solve is Dirichlet at a mass inflow, as at a wall, so with
+  viscosity and u_n'' != 0 at an inflow, that should give the same O(1) error in the normal
   pressure gradient there (not checked in incflo).
-- **Wall/inflow corner:** the corner node keeps the original stencil, and the wall cell next
-  to it keeps about 0.4 delta, which does not converge. The next two cells converge slowly.
+- **Wall/inflow corner:** with `wall_corr=1` the corner node keeps the original stencil, and
+  the wall cell next to it keeps about 0.4 delta, which does not converge. With `wall_corr=2`
+  the corner node is second order too, and the wall cells at the inflow end go to 0 at O(h).
 
-`mlndlap_divu` treats an inflow face like a wall, with the inflow velocity in the ghost cell,
-and the correction's normal flux already uses the first cell minus the ghost cell. Counting
-inflow faces as walls in the correction (a local change, not on this branch) makes the inflow
-face second order in both modes, with the inflow error -0.074, -0.033, -0.015, -0.007
-(`wall_corr=1`) and -0.048, -0.025, -0.013, -0.007 (`wall_corr=2`). With
-`wall_corr=2` it also corrects the wall/inflow corners: those nodes become second order, and
-the wall cells at i = 0, 1, 2 go to 0 at O(h) (0.117, 0.059, 0.029, 0.015).
+The corner node never uses the ghost cell outside both faces, so it does not matter that the
+inflow and the wall disagree there. It takes the inflow flux from the inflow face and the
+wall flux from the wall. With `wall_corr=2` the inflow flux at the corner node is
+extrapolated along the wall like the rest of the corner's terms, which keeps a uniform inflow
+velocity as it is.
 
-The output is the same in 3D (8 cells in z) and with `max_grid_size` 16 and 32.
+### A uniform inflow against no-slip walls
+
+The channel again, with u = 1 in the inflow ghost cells up to the walls, as in a channel with
+a uniform `mi` inflow. The data do not match at the wall/inflow corners, and the velocity is
+singular there. The velocity projected is u = (2/pi)^2 atan2(y, x) atan2(1-y, x), v = 0,
+which is 1 on the inflow face, 0 on the walls, and changes by O(1) from cell to cell next to
+the corners at every resolution. The projected velocity must carry the inflow flux, 1,
+through every cross-section; the test prints the flux h sum_j u(i,j) minus 1 at x = 1/4, 1/2
+and 3/4:
+
+```
+wall_corr=0
+     n        x = 1/4        x = 1/2        x = 3/4
+    32     -4.577e-12     -2.822e-12     -1.770e-12
+    64     -4.804e-12     -2.713e-12     -1.719e-12
+   128     -4.771e-12     -2.667e-12     -1.567e-12
+   256     -4.552e-12     -2.300e-12     -1.092e-12
+
+wall_corr=1
+    32     -1.805e-03     -2.076e-03     -2.166e-03
+    64     -1.022e-03     -1.094e-03     -1.117e-03
+   128     -5.430e-04     -5.616e-04     -5.675e-04
+   256     -2.798e-04     -2.845e-04     -2.860e-04
+
+wall_corr=2
+    32      4.752e-04      2.042e-04      1.143e-04
+    64      1.253e-04      5.295e-05      2.959e-05
+   128      3.208e-05      1.347e-05      7.523e-06
+   256      8.111e-06      3.395e-06      1.896e-06
+```
+
+- The original stencil is conservative, and the flux is right to the solver tolerance.
+- With `wall_corr=1` the wall/inflow corner nodes are not corrected and their neighbours are,
+  and the flux through their shared half-cell faces differs. The difference is an O(h) mass
+  source at each corner, and the projected velocity carries the wrong flux, by the same amount
+  at every x, which converges at first order.
+- With `wall_corr=2` the divergence is conservative again. What remains is the O(h^2)
+  difference between the flux the corrected nodes use on the half cells next to the walls and
+  the sum of the cell velocities measured here.
