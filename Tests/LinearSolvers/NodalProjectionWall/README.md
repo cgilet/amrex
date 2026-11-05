@@ -51,8 +51,8 @@ make -j4 AMREX_HOME=/path/to/amrex       # DIM=3 for 3D
 mpiexec -n 2 ./main2d.gnu.MPI.ex inputs
 ```
 
-`n_cell`, `max_grid_size`, `rtol`, `verbose`, `maxorders`, `wall_corr` and `divu_check` can be
-set in `inputs` or on the command line. `inputs` uses `wall_corr = 2`; add `wall_corr=0` on
+`n_cell`, `max_grid_size`, `rtol`, `verbose`, `maxorders`, `wall_corr`, `divu_check` and
+`channel` can be set in `inputs` or on the command line. `inputs` uses `wall_corr = 2`; add `wall_corr=0` on
 the command line to see the error. It takes a few seconds. Apart from the solve's residual,
 which is at round-off, the output does not depend on `max_grid_size` (checked with 16, 32 and
 1024), and 3D (8 cells in z) prints the same numbers as 2D.
@@ -221,3 +221,72 @@ extrapolation made those converge at first order (0.044, 0.023, 0.011), but in a
 manufactured incflo test with div(u) = S != 0 the corner errors then stopped converging.
 Whether `wall_corr=2` handles both cases is still to be checked in incflo. This test leaves
 the corners out of its wall fits.
+
+## Where a wall meets an inflow or an outflow face
+
+With `channel = 1` (in `inputs`), the test also projects a divergence-free channel flow on the
+unit square, from the stream function psi = H(y) + F(x) G(y) with H = 3y^2 - 2y^3,
+F = x + x^2/2 and G = y^2 (1-y)^2:
+
+- no-slip walls at y = 0 and 1 (Neumann for phi), where v_n'' = -2 (1+x) is not zero up to
+  either end,
+- an inflow face at x = 0 (`LinOpBCType::inflow`, the inflow velocity in the ghost cells),
+  where u_n'' = G'(y),
+- a pressure outflow at x = 1 (phi = 0, `LinOpBCType::Dirichlet`),
+
+as incflo sets up mass inflow and pressure outflow. It prints the divergence of the exact
+velocity at the nodes, and the normal velocity error after the projection divided by delta,
+in the wall cells and next to the inflow face. The outflow face is left out of the second
+table: incflo's viscous solve is Neumann there, so an offset of the velocity next to it does
+not become an O(1) force. Without the wall correction (`wall_corr=0`):
+
+```
+     n   interior       wall   wall i=1   corner i=0   inflow face   wall i=n-1
+    32     0.0577     0.8796     0.4838       0.4690        0.0672       0.9236
+    64     0.0300     0.9084     0.4920       0.4844        0.0574       0.9614
+   128     0.0153     0.9229     0.4961       0.4922        0.0527       0.9806
+   256     0.0077     0.9302     0.4980       0.4961        0.0504       0.9903
+
+     n   max |u_P - u|    walls    i=0      i=1      i=2    i=n-2    i=n-1   inflow
+    32       5.287e-04    0.929    0.968    0.951    0.945    0.798    0.378    0.892
+    64       1.819e-04    0.964    0.990    0.980    0.977    0.808    0.383    0.944
+   128       5.843e-05    0.982    0.998    0.993    0.991    0.811    0.385    0.972
+   256       1.791e-05    0.991    1.001    0.998    0.997    0.813    0.386    0.986
+```
+
+With `wall_corr=1` (`wall_corr=2` prints the same: the only nodes on two faces are on the
+outflow, where phi is set, or on the inflow, which the correction leaves alone):
+
+```
+     n   interior       wall   wall i=1   corner i=0   inflow face   wall i=n-1
+    32     0.0577     0.1119     0.0616       0.4690        0.0672       0.1175
+    64     0.0300     0.0573     0.0310       0.4844        0.0574       0.0606
+   128     0.0153     0.0290     0.0156       0.4922        0.0527       0.0308
+   256     0.0077     0.0146     0.0078       0.4961        0.0504       0.0155
+
+     n   max |u_P - u|    walls    i=0      i=1      i=2    i=n-2    i=n-1   inflow
+    32       3.065e-04    0.132    0.444    0.152    0.136    0.135    0.065    0.850
+    64       9.198e-05    0.069    0.418    0.098    0.082    0.071    0.034    0.928
+   128       2.535e-05    0.035    0.404    0.070    0.054    0.037    0.018    0.965
+   256       6.680e-06    0.018    0.396    0.056    0.039    0.019    0.009    0.983
+```
+
+- **Outflow:** the correction works up to the outflow. The wall nodes next to it become second
+  order, and the wall cells next to it go to 0 at O(h) like the rest of the wall.
+- **Inflow face:** the correction leaves its nodes alone, so the divergence there stays first
+  order, and the normal velocity next to the inflow face is off by delta, as at a wall without
+  the correction. incflo's viscous solve is Dirichlet at a mass inflow, as at a wall, so with
+  viscosity and u_n'' != 0 at an inflow this should give the same O(1) error in the normal
+  pressure gradient there (not checked in incflo).
+- **Wall/inflow corner:** the corner node keeps the original stencil, and the wall cell next
+  to it keeps about 0.4 delta, which does not converge. The next two cells converge slowly.
+
+`mlndlap_divu` treats an inflow face like a wall, with the inflow velocity in the ghost cell,
+and the correction's normal flux already uses the first cell minus the ghost cell. Counting
+inflow faces as walls in the correction (a local change, not on this branch) makes the inflow
+face second order in both modes, with the inflow error -0.074, -0.033, -0.015, -0.007
+(`wall_corr=1`) and -0.048, -0.025, -0.013, -0.007 (`wall_corr=2`). With
+`wall_corr=2` it also corrects the wall/inflow corners: those nodes become second order, and
+the wall cells at i = 0, 1, 2 go to 0 at O(h) (0.117, 0.059, 0.029, 0.015).
+
+The output is the same in 3D (8 cells in z) and with `max_grid_size` 16 and 32.
