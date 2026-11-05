@@ -46,7 +46,14 @@ correction and 0 with it. Three more checks without a solve follow:
   control volumes minus the flux through the domain boundary. It is zero to round-off for any
   velocity if the fluxes through the faces of the control volumes telescope, as they do with
   the original stencil. It is checked in a closed box, and with walls at y = 0 and 1 and
-  inflow faces at both x ends.
+  inflow faces at both x ends. In 3D it is also checked with walls at both z ends instead of
+  periodic z, so that it includes nodes on three walls, and on two walls and an inflow face.
+- **Two AMR levels:** a fine level (ratio 2) touching the bottom wall over the coarse cells
+  [3n/8, 5n/8) x [0, n/4), with u = (x y, -y^2/2) and with the linear shear u = (y, 0). It
+  prints rhs / (h/4) on the coarse and the fine wall nodes away from the coarse/fine boundary,
+  the rhs at the corners of the coarse/fine boundary (the two on the wall, and the fine
+  level's corner away from it), and the largest rhs / (h/4) at the other coarse/fine nodes.
+  See "Two AMR levels" below.
 - **The Burggraf rhs near the corners:** rhs / h^2 on the 3x3 nodes at the (0,0) and the
   (0,n) lid corner.
 
@@ -63,8 +70,8 @@ the command line to see the error. It takes a few seconds. Apart from the number
 zero to round-off or to the solver tolerance (the solve's residual, and the conservation and
 uniform-inflow flux errors where they are zero), the output does not depend on
 `max_grid_size` (checked with 16, 32 and 1024), and 3D (8 cells in z) prints the same numbers
-as 2D. The exception is the conservation check with `wall_corr=1`, whose random velocity
-depends on z.
+as 2D. The exceptions are the conservation check with `wall_corr=1`, whose random velocity
+depends on z, and its two extra 3D columns with walls at both z ends.
 
 ## Output without the wall correction (`wall_corr=0`, excerpt)
 
@@ -236,7 +243,23 @@ through them. The conservation check shows it, with a random velocity:
    256      5.673e-04      5.673e-04
 ```
 
-with `wall_corr=1`, against 1e-16 with `wall_corr=0` and `wall_corr=2`. For a smooth velocity
+with `wall_corr=1`, against 1e-16 with `wall_corr=0` and `wall_corr=2`. The same holds in 3D
+with walls on all six faces, where the corners of the box are on three walls (`wall_corr=1`,
+then `wall_corr=2`; also with `max_grid_size=4`, two boxes in z):
+
+```
+     n     closed, z walls   inflow, z walls
+    32       -6.371e-04        -6.371e-04
+    64        1.312e-03         1.312e-03
+   128        1.666e-04         1.666e-04
+   256        1.321e-04         1.321e-04
+
+    32       -1.843e-17         4.163e-17
+    64       -1.205e-16         1.041e-16
+   128        1.122e-16         1.214e-16
+   256        8.632e-17        -2.949e-17
+```
+ For a smooth velocity
 this is an O(h^2) error at each corner, which the Burggraf results above do not show. Where
 the velocity changes by O(1) from cell to cell next to a corner, it is an O(h) mass source
 (see the uniform inflow below).
@@ -247,6 +270,42 @@ extrapolation made those converge at first order (0.044, 0.023, 0.011), but in a
 manufactured incflo test with div(u) = S != 0 the corner errors then stopped converging.
 Whether `wall_corr=2` handles both cases is still to be checked in incflo. This test leaves
 the corners out of its wall fits.
+
+## Two AMR levels
+
+The correction is applied level by level. At a node on the coarse/fine boundary, `compRHS`
+then rebuilds the coarse rhs from the coarse cells and the fine level
+(`mlndlap_divu_cf_contrib`, `mlndlap_divu_fine_contrib`), without it. With a fine level on the
+bottom wall (the same output in 2D and 3D, z periodic):
+
+```
+               wall / (h/4)              rhs at the c/f corners             other c/f
+     n      coarse       fine     wall i=3n/8  wall i=5n/8  (3n/8,n/4)     / (h/4)
+  u = (x y, -y^2/2)
+    32      0.0000     0.0000     -4.199e-02    8.301e-02    2.490e-02      0.3750
+    64      0.0000     0.0000     -4.443e-02    8.057e-02    2.417e-02      0.3750
+   128      0.0000     0.0000     -4.565e-02    7.935e-02    2.380e-02      0.3750
+   256      0.0000     0.0000     -4.626e-02    7.874e-02    2.362e-02      0.3750
+  u = (y, 0)
+    32      0.0000     0.0000     -1.250e-01    1.250e-01    6.250e-02      0.0000
+   ...
+```
+
+with `wall_corr=2` (and 1). With `wall_corr=0` the first two columns are 1 for the first
+velocity; nothing else changes in any mode.
+
+- The wall nodes of both levels are corrected, the fine ones up to the coarse/fine boundary.
+- The corners of the coarse/fine boundary, on the wall or not, have an O(1) rhs, even for the
+  linear shear u = (y, 0), which has u_n'' = 0 and needs no correction. The stencil takes the
+  velocity in each cell as constant. For a shear, the error that leaves in each cell's share
+  cancels between the four cells around a uniform node, but not where they differ in size.
+  The missing wall correction at the two coarse/fine nodes on the wall is O(h), next to this
+  O(1).
+- Along the coarse/fine boundary away from its corners the rhs is O(h) (0.375 h/4), first
+  order, as at an uncorrected wall.
+
+So a fine level on a wall gets the correction wherever it can make a difference; the
+coarse/fine nodes on the wall are limited by the coarse/fine stencil itself.
 
 ## Where a wall meets an inflow or an outflow face
 

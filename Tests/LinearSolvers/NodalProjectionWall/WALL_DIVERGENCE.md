@@ -236,13 +236,40 @@ incflo's viscous solve is Neumann at a pressure outflow, so an offset there is n
   converging in a manufactured solution with div(u) = S (incflo probtype 605, branch
   `divu_source_validation`). Mode 2 is conservative and treats the velocity and the source alike; whether
   it converges there is the deciding incflo test.
-- **3D corners** where three walls meet are not covered by any test (the reproducer and the
-  3D manufactured solution are periodic in one direction).
+- **3D corners** where three walls meet: the reproducer's conservation check now covers them
+  (walls on all six faces; mode 2 conservative to round-off, mode 1 not), but no projection
+  test does (the reproducer's solves and the 3D manufactured solution are periodic in one
+  direction).
 - **incflo inflow cases** with viscosity and u_n'' != 0 at the inflow have not been run.
-- **EB** (the correction applies in regular boxes only), **AMR** (a fine level touching a
-  wall) and **GPU** runs are untested.
+- **EB** is not supported: the correction applies in regular boxes only, and only the build
+  has been checked.
+- **AMR**: see section 11. The coarse/fine nodes on a wall are not corrected, but that
+  stencil has an O(1) error at the corners of the coarse/fine boundary anyway.
+- **GPU**: only a CUDA compile has been checked, not a run.
 - **The viscous operator.** With incflo's default `mg_maxorder = 2`, its own O(1) wall error
   remains; `mg_maxorder = 3` is needed for c to go to 0.
+
+## 11. AMR: a fine level on a wall
+
+The correction is added level by level, so the wall nodes of a fine level are corrected like
+those of the coarse one, up to the coarse/fine boundary. At a node on the coarse/fine boundary,
+`compRHS` then rebuilds the coarse rhs from the uncovered coarse cells and a restriction of the
+fine level (`mlndlap_divu_cf_contrib`, `mlndlap_divu_fine_contrib`), which have no correction.
+Where that boundary meets a wall, the node is first order.
+
+That turns out not to matter: those nodes are corners of the coarse/fine boundary, and there
+the stencil is not even exact for a linear shear. The reproducer, with a fine level (ratio 2)
+on the bottom wall, gives for u = (y, 0) (u_n'' = 0, so no wall error) an rhs of -1/8 and
+1/8 at the two coarse/fine nodes on the wall, and 1/16 at the fine level's corner away from
+the wall, at every resolution and in every mode. By hand at that corner: the three coarse
+cells give 1/4 and the restricted fine level -3/16. The stencil takes the velocity in each
+cell as constant. For a shear, the error that leaves in each cell's share of the node, of
+order h^2 out of a control volume of order h^2, cancels between the four cells of a uniform
+node, not where they differ in size. The missing wall correction is O(h) on top of this O(1).
+
+Along the coarse/fine boundary away from its corners, the rhs is O(h), first order, like an
+uncorrected wall. Extending the correction to the coarse/fine nodes on a wall would not make
+them second order. That would need a coarse/fine stencil that is consistent for linear fields.
 
 ## Reproducing
 
