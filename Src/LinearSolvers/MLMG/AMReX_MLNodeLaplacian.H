@@ -106,7 +106,7 @@ public :
      */
     void setRZCorrection (bool rz) noexcept { m_is_rz = rz; }
 
-    //! Second-order nodal divergence at Neumann (wall) domain faces: the tangential
+    //! Second-order nodal divergence at Neumann (wall) and inflow domain faces: the tangential
     //! derivatives and the cell-centred source are taken a quarter cell from the wall,
     //! the centre of the wall node's half-cell control volume, instead of at the first
     //! cell centres.  Nodes on two or more walls keep the original stencil.
